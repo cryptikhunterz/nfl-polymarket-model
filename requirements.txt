@@ -1,0 +1,17 @@
+nfl-data-py
+pandas
+numpy
+elote
+scipy
+scikit-learn
+py-clob-client
+web3
+eth-account
+requests
+python-dotenv
+jupyter
+matplotlib
+seaborn
+flask
+flask-socketio
+eventlet

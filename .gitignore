@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+.venv/
+
+# Environment variables
+.env
+.env.local
+
+# Data files (large CSVs)
+data/raw/*.csv
+data/processed/*.csv
+data/polymarket/*.csv
+
+# Keep directory structure
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/polymarket/.gitkeep
+
+# Outputs (regenerated)
+outputs/*.csv
+outputs/*.txt
+!outputs/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+notebooks/*.ipynb
+
+# Distribution
+dist/
+build/
+*.egg-info/
