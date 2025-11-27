@@ -10,11 +10,134 @@ Calculates all factors per team for the model:
 
 import pandas as pd
 import numpy as np
+import requests
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Any
 
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
+
+
+class CurrentRosterFetcher:
+    """Fetches current NFL roster/starter information from ESPN API"""
+
+    ESPN_TEAM_IDS = {
+        'ARI': 22, 'ATL': 1, 'BAL': 33, 'BUF': 2, 'CAR': 29, 'CHI': 3,
+        'CIN': 4, 'CLE': 5, 'DAL': 6, 'DEN': 7, 'DET': 8, 'GB': 9,
+        'HOU': 34, 'IND': 11, 'JAX': 30, 'KC': 12, 'LV': 13, 'LAC': 24,
+        'LAR': 14, 'MIA': 15, 'MIN': 16, 'NE': 17, 'NO': 18, 'NYG': 19,
+        'NYJ': 20, 'PHI': 21, 'PIT': 23, 'SF': 25, 'SEA': 26, 'TB': 27,
+        'TEN': 10, 'WAS': 28
+    }
+
+    # Position groups we care about
+    OFFENSE_POSITIONS = ['QB', 'RB', 'WR', 'TE', 'OT', 'OG', 'C', 'T', 'G']
+    DEFENSE_POSITIONS = ['DE', 'DT', 'LB', 'CB', 'S', 'NT', 'OLB', 'ILB', 'MLB', 'FS', 'SS']
+    KEY_POSITIONS = ['QB', 'WR', 'RB', 'TE', 'DE', 'CB', 'LB', 'S']
+
+    def __init__(self):
+        self._cache = {}  # team -> {position: [players]}
+        self._roster_cache = {}  # team -> full roster data
+
+    def get_team_roster(self, team_abbrev: str) -> Dict:
+        """Get full roster for a team, organized by position"""
+        if team_abbrev in self._roster_cache:
+            return self._roster_cache[team_abbrev]
+
+        team_id = self.ESPN_TEAM_IDS.get(team_abbrev)
+        if not team_id:
+            return {}
+
+        try:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/roster"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            roster = {}
+            for group in data.get('athletes', []):
+                for player in group.get('items', []):
+                    pos = player.get('position', {}).get('abbreviation', '')
+                    name = player.get('displayName', '')
+                    if pos and name:
+                        if pos not in roster:
+                            roster[pos] = []
+                        roster[pos].append({
+                            'name': name,
+                            'id': player.get('id'),
+                            'jersey': player.get('jersey'),
+                            'status': player.get('status', {}).get('type', 'active')
+                        })
+
+            self._roster_cache[team_abbrev] = roster
+            return roster
+
+        except Exception as e:
+            print(f"  Warning: Could not fetch roster for {team_abbrev}: {e}")
+            return {}
+
+    def get_current_qb(self, team_abbrev: str) -> Optional[str]:
+        """Get the current starting QB for a team"""
+        roster = self.get_team_roster(team_abbrev)
+        qbs = roster.get('QB', [])
+        # Return first QB (typically the starter)
+        return qbs[0]['name'] if qbs else None
+
+    def get_position_starters(self, team_abbrev: str, position: str, count: int = 1) -> List[str]:
+        """Get current starters at a position (e.g., top 2 WRs)"""
+        roster = self.get_team_roster(team_abbrev)
+        players = roster.get(position, [])
+        return [p['name'] for p in players[:count]]
+
+    def get_all_current_qbs(self) -> Dict[str, str]:
+        """Get current QBs for all 32 teams"""
+        print("  Fetching current starting QBs from ESPN roster...")
+        qbs = {}
+        for team in self.ESPN_TEAM_IDS.keys():
+            qb = self.get_current_qb(team)
+            if qb:
+                qbs[team] = qb
+        print(f"  Found current QBs for {len(qbs)} teams")
+        return qbs
+
+    def get_all_starters(self) -> Dict[str, Dict[str, List[str]]]:
+        """Get key starters for all 32 teams"""
+        print("  Fetching current rosters from ESPN...")
+        all_starters = {}
+
+        for team in self.ESPN_TEAM_IDS.keys():
+            roster = self.get_team_roster(team)
+            starters = {
+                'QB': self.get_position_starters(team, 'QB', 1),
+                'RB': self.get_position_starters(team, 'RB', 2),
+                'WR': self.get_position_starters(team, 'WR', 3),
+                'TE': self.get_position_starters(team, 'TE', 1),
+                'OL': (self.get_position_starters(team, 'OT', 2) +
+                       self.get_position_starters(team, 'OG', 2) +
+                       self.get_position_starters(team, 'C', 1) +
+                       self.get_position_starters(team, 'T', 2) +
+                       self.get_position_starters(team, 'G', 2)),
+                'DE': self.get_position_starters(team, 'DE', 2),
+                'DT': self.get_position_starters(team, 'DT', 2),
+                'LB': (self.get_position_starters(team, 'LB', 3) +
+                       self.get_position_starters(team, 'OLB', 2) +
+                       self.get_position_starters(team, 'ILB', 2) +
+                       self.get_position_starters(team, 'MLB', 1)),
+                'CB': self.get_position_starters(team, 'CB', 2),
+                'S': (self.get_position_starters(team, 'S', 2) +
+                      self.get_position_starters(team, 'FS', 1) +
+                      self.get_position_starters(team, 'SS', 1)),
+            }
+            all_starters[team] = starters
+
+        teams_with_data = sum(1 for t in all_starters if any(all_starters[t].values()))
+        print(f"  Found roster data for {teams_with_data} teams")
+        return all_starters
+
+    def get_position_count(self, team_abbrev: str, position: str) -> int:
+        """Get count of players at a position (useful for depth assessment)"""
+        roster = self.get_team_roster(team_abbrev)
+        return len(roster.get(position, []))
 
 
 class FactorCalculator:
@@ -27,7 +150,11 @@ class FactorCalculator:
         self.schedules = None
         self.team_epa = None
         self.qb_stats = None
+        self.weekly_stats = None  # Player-level weekly stats (WR, RB, TE, QB)
         self.elos = None
+        self.roster_fetcher = CurrentRosterFetcher()
+        self.current_qbs = None  # Will be populated with current starting QBs
+        self.current_starters = None  # All key starters by position
 
     def load_data(self):
         """Load all required data files"""
@@ -57,6 +184,12 @@ class FactorCalculator:
         if qb_file.exists():
             self.qb_stats = pd.read_csv(qb_file)
             print(f"  Loaded QB stats")
+
+        # Weekly player stats (WR, RB, TE, QB)
+        weekly_file = RAW_DIR / "weekly_stats.csv"
+        if weekly_file.exists():
+            self.weekly_stats = pd.read_csv(weekly_file)
+            print(f"  Loaded weekly player stats ({len(self.weekly_stats)} rows)")
 
         # Elo ratings (processed) - merge unit_elos with team_elo
         unit_elo_file = PROCESSED_DIR / "unit_elos.csv"
@@ -131,6 +264,170 @@ class FactorCalculator:
 
         return pd.DataFrame(result)
 
+    def _match_player_name(self, full_name: str) -> str:
+        """Convert full name to first initial + last name pattern for matching.
+        E.g., 'Tyreek Hill' -> 't.hill'
+        """
+        parts = full_name.split()
+        if len(parts) >= 2:
+            first_initial = parts[0][0].lower()
+            last_name = parts[-1].lower()
+            return f"{first_initial}.{last_name}"
+        return full_name.lower()
+
+    def _get_player_stats(self, player_name: str, position: str) -> Optional[pd.DataFrame]:
+        """Look up player stats from weekly_stats by name and position.
+        Searches across ALL teams since player may have been traded.
+        Returns most recent 5 games of stats.
+        """
+        if self.weekly_stats is None:
+            return None
+
+        pattern = self._match_player_name(player_name)
+
+        # Match by player_name column (which uses short format like "T.Hill")
+        position_stats = self.weekly_stats[self.weekly_stats['position'] == position]
+        player_data = position_stats[position_stats['player_name'].str.lower() == pattern]
+
+        if len(player_data) == 0:
+            # Try matching against display name
+            player_data = position_stats[
+                position_stats['player_display_name'].str.lower() == player_name.lower()
+            ]
+
+        if len(player_data) == 0:
+            return None
+
+        # Return most recent 5 games
+        return player_data.sort_values(['season', 'week'], ascending=False).head(5)
+
+    def calculate_receiver_quality(self, team: str) -> Dict[str, Any]:
+        """Calculate receiving corps quality based on current WR/TE starters.
+        Returns dict with receiver metrics.
+        """
+        if self.weekly_stats is None:
+            return {'wr_epa': 0, 'wr_target_share': 0, 'wr_score': 50}
+
+        # Get current WR and TE starters from roster
+        if self.current_starters is None:
+            self.current_starters = self.roster_fetcher.get_all_starters()
+
+        team_starters = self.current_starters.get(team, {})
+        wr_starters = team_starters.get('WR', [])
+        te_starters = team_starters.get('TE', [])
+
+        all_receivers = wr_starters[:3] + te_starters[:1]  # Top 3 WRs + TE1
+
+        total_epa = 0
+        total_target_share = 0
+        players_found = 0
+        receiver_names = []
+
+        for receiver in all_receivers:
+            # Try WR first, then TE
+            stats = self._get_player_stats(receiver, 'WR')
+            if stats is None:
+                stats = self._get_player_stats(receiver, 'TE')
+
+            if stats is not None and len(stats) > 0:
+                epa = stats['receiving_epa'].mean() if 'receiving_epa' in stats.columns else 0
+                target_share = stats['target_share'].mean() if 'target_share' in stats.columns else 0
+
+                # Handle NaN values
+                epa = 0 if pd.isna(epa) else epa
+                target_share = 0 if pd.isna(target_share) else target_share
+
+                total_epa += epa
+                total_target_share += target_share
+                players_found += 1
+                receiver_names.append(receiver)
+
+        if players_found == 0:
+            return {'wr_epa': 0, 'wr_target_share': 0, 'wr_score': 50, 'receivers': []}
+
+        avg_epa = total_epa / players_found
+        avg_target_share = total_target_share / players_found
+
+        # Normalize to 0-100 score
+        # Receiving EPA typically ranges from -0.5 to +0.5
+        epa_score = (avg_epa + 0.5) / 1.0 * 100
+        epa_score = np.clip(epa_score, 0, 100)
+
+        # Target share typically 0.05 to 0.25
+        target_score = (avg_target_share - 0.05) / 0.20 * 100
+        target_score = np.clip(target_score, 0, 100)
+
+        # Composite score
+        wr_score = (epa_score * 0.6) + (target_score * 0.4)
+
+        return {
+            'wr_epa': avg_epa,
+            'wr_target_share': avg_target_share,
+            'wr_score': wr_score,
+            'receivers': receiver_names
+        }
+
+    def calculate_rusher_quality(self, team: str) -> Dict[str, Any]:
+        """Calculate rushing corps quality based on current RB starters.
+        Returns dict with rushing metrics.
+        """
+        if self.weekly_stats is None:
+            return {'rb_epa': 0, 'rb_ypc': 0, 'rb_score': 50}
+
+        # Get current RB starters from roster
+        if self.current_starters is None:
+            self.current_starters = self.roster_fetcher.get_all_starters()
+
+        team_starters = self.current_starters.get(team, {})
+        rb_starters = team_starters.get('RB', [])[:2]  # Top 2 RBs
+
+        total_epa = 0
+        total_ypc = 0
+        players_found = 0
+        rusher_names = []
+
+        for rusher in rb_starters:
+            stats = self._get_player_stats(rusher, 'RB')
+
+            if stats is not None and len(stats) > 0:
+                epa = stats['rushing_epa'].mean() if 'rushing_epa' in stats.columns else 0
+                carries = stats['carries'].sum() if 'carries' in stats.columns else 0
+                yards = stats['rushing_yards'].sum() if 'rushing_yards' in stats.columns else 0
+
+                # Handle NaN values
+                epa = 0 if pd.isna(epa) else epa
+                ypc = yards / max(carries, 1) if carries > 0 else 4.0
+
+                total_epa += epa
+                total_ypc += ypc
+                players_found += 1
+                rusher_names.append(rusher)
+
+        if players_found == 0:
+            return {'rb_epa': 0, 'rb_ypc': 4.0, 'rb_score': 50, 'rushers': []}
+
+        avg_epa = total_epa / players_found
+        avg_ypc = total_ypc / players_found
+
+        # Normalize to 0-100 score
+        # Rushing EPA typically ranges from -0.3 to +0.2
+        epa_score = (avg_epa + 0.3) / 0.5 * 100
+        epa_score = np.clip(epa_score, 0, 100)
+
+        # YPC typically 3.5 to 5.5
+        ypc_score = (avg_ypc - 3.5) / 2.0 * 100
+        ypc_score = np.clip(ypc_score, 0, 100)
+
+        # Composite score
+        rb_score = (epa_score * 0.5) + (ypc_score * 0.5)
+
+        return {
+            'rb_epa': avg_epa,
+            'rb_ypc': avg_ypc,
+            'rb_score': rb_score,
+            'rushers': rusher_names
+        }
+
     def calculate_qb_quality(self) -> pd.DataFrame:
         """
         Calculate QB Quality factor (30% weight)
@@ -138,8 +435,14 @@ class FactorCalculator:
         - CPOE (Completion % Over Expected)
         - Pressure-to-sack rate
         - Playoff wins (historical bonus)
+
+        Uses CURRENT starting QB from ESPN roster API, not historical leader.
         """
         print("\nCalculating QB Quality factors...")
+
+        # Fetch current starting QBs from ESPN roster
+        if self.current_qbs is None:
+            self.current_qbs = self.roster_fetcher.get_all_current_qbs()
 
         if self.qb_stats is None:
             print("  Warning: QB stats not available, using offense Elo as proxy")
@@ -156,9 +459,12 @@ class FactorCalculator:
                 qb_quality = (off_elo - 1350) / 300 * 100
                 qb_quality = np.clip(qb_quality, 0, 100)
 
+                # Get current QB name from roster if available
+                current_qb = self.current_qbs.get(team, 'N/A')
+
                 qb_proxy.append({
                     'team': team,
-                    'primary_qb': 'N/A',
+                    'primary_qb': current_qb,
                     'qb_quality_score': qb_quality
                 })
             return pd.DataFrame(qb_proxy)
@@ -171,9 +477,69 @@ class FactorCalculator:
             if len(team_qbs) == 0:
                 continue
 
-            # Get primary QB (most dropbacks)
-            primary_qb = team_qbs.groupby('qb_name')['dropbacks'].sum().idxmax()
-            qb_data = team_qbs[team_qbs['qb_name'] == primary_qb]
+            # First check for current starting QB from roster API
+            current_qb = self.current_qbs.get(team)
+            qb_data = None
+
+            if current_qb:
+                # Try to find current starter in QB stats
+                # Match by first initial + last name (e.g., "Jacoby Brissett" -> "J.Brissett")
+                parts = current_qb.split()
+                if len(parts) >= 2:
+                    first_initial = parts[0][0].upper()
+                    last_name = parts[-1]
+                    # Build pattern like "J.Brissett" or just last name as fallback
+                    exact_pattern = f"{first_initial}.{last_name}".lower()
+                else:
+                    exact_pattern = current_qb.lower()
+                    last_name = current_qb
+
+                # First check team-specific stats with exact match (first initial + last name)
+                matching_qbs = team_qbs[team_qbs['qb_name'].str.lower() == exact_pattern]
+
+                if len(matching_qbs) > 0:
+                    primary_qb = matching_qbs.groupby('qb_name')['dropbacks'].sum().idxmax()
+                    qb_data = matching_qbs[matching_qbs['qb_name'] == primary_qb]
+                    print(f"  {team}: Using current starter {current_qb} -> {primary_qb} (team stats)")
+                else:
+                    # Search in ALL teams with exact match - QB may have played elsewhere
+                    all_matching = self.qb_stats[self.qb_stats['qb_name'].str.lower() == exact_pattern]
+
+                    if len(all_matching) > 0:
+                        primary_qb = all_matching.groupby('qb_name')['dropbacks'].sum().idxmax()
+                        qb_data = all_matching[all_matching['qb_name'] == primary_qb]
+                        prev_teams = all_matching['team'].unique()
+                        print(f"  {team}: Using current starter {current_qb} -> {primary_qb} (from {', '.join(prev_teams)})")
+                    else:
+                        # Current starter has no NFL stats (likely a rookie)
+                        # Use the current starter's name and assign a baseline rookie score
+                        parts = current_qb.split()
+                        if len(parts) >= 2:
+                            primary_qb = f"{parts[0][0]}.{parts[-1]}"
+                        else:
+                            primary_qb = current_qb
+                        qb_data = None  # Mark as no stats - will use baseline
+                        print(f"  {team}: Current starter {current_qb} -> {primary_qb} (ROOKIE - no NFL stats)")
+            else:
+                # Fallback to historical leader if roster API failed
+                primary_qb = team_qbs.groupby('qb_name')['dropbacks'].sum().idxmax()
+                qb_data = team_qbs[team_qbs['qb_name'] == primary_qb]
+
+            # Handle rookie QBs with no NFL stats
+            if qb_data is None or len(qb_data) == 0:
+                # Rookie/unknown QB - assign baseline score (below average)
+                qb_factors.append({
+                    'team': team,
+                    'primary_qb': primary_qb,
+                    'epa_dropback': 0,
+                    'cpoe': 0,
+                    'sack_rate': 0.06,  # Average sack rate
+                    'epa_score': 30,    # Below average
+                    'cpoe_score': 30,   # Below average
+                    'sack_score': 50,   # Average
+                    'qb_quality_score': 35  # Below average (unknown)
+                })
+                continue
 
             # Recent 5 games
             recent = qb_data.tail(5)
@@ -357,6 +723,55 @@ class FactorCalculator:
 
         return pd.DataFrame(line_factors)
 
+    def calculate_skill_positions(self) -> pd.DataFrame:
+        """
+        Calculate Skill Position quality using CURRENT starters from ESPN roster.
+        - WR corps quality (based on current WRs)
+        - RB corps quality (based on current RBs)
+
+        This adjusts the offensive potential based on who is actually playing.
+        """
+        print("\nCalculating Skill Position factors (using current starters)...")
+
+        # Fetch all starters if not already done
+        if self.current_starters is None:
+            self.current_starters = self.roster_fetcher.get_all_starters()
+
+        skill_factors = []
+
+        for team in self.get_teams():
+            # Get receiver quality
+            wr_data = self.calculate_receiver_quality(team)
+            rb_data = self.calculate_rusher_quality(team)
+
+            receivers = wr_data.get('receivers', [])
+            rushers = rb_data.get('rushers', [])
+
+            if receivers or rushers:
+                print(f"  {team}: WRs={receivers[:2]}, RBs={rushers[:1]}")
+
+            # Combine into skill position score
+            wr_score = wr_data.get('wr_score', 50)
+            rb_score = rb_data.get('rb_score', 50)
+
+            # Weight WRs slightly more in modern NFL
+            skill_score = (wr_score * 0.6) + (rb_score * 0.4)
+
+            skill_factors.append({
+                'team': team,
+                'wr_epa': wr_data.get('wr_epa', 0),
+                'wr_target_share': wr_data.get('wr_target_share', 0),
+                'wr_score': wr_score,
+                'rb_epa': rb_data.get('rb_epa', 0),
+                'rb_ypc': rb_data.get('rb_ypc', 4.0),
+                'rb_score': rb_score,
+                'skill_position_score': skill_score,
+                'current_wrs': ', '.join(receivers[:3]) if receivers else 'N/A',
+                'current_rbs': ', '.join(rushers[:2]) if rushers else 'N/A'
+            })
+
+        return pd.DataFrame(skill_factors)
+
     def calculate_situational(self) -> pd.DataFrame:
         """
         Calculate Situational factor (15% weight)
@@ -522,6 +937,7 @@ class FactorCalculator:
         qb_quality = self.calculate_qb_quality()
         efficiency = self.calculate_team_efficiency()
         line_play = self.calculate_line_play()
+        skill_positions = self.calculate_skill_positions()  # NEW: WR/RB based on current starters
         situational = self.calculate_situational()
         luck = self.calculate_luck_regression()
 
@@ -540,6 +956,13 @@ class FactorCalculator:
                 on='team', how='left'
             )
 
+        if len(skill_positions) > 0:
+            all_factors = all_factors.merge(
+                skill_positions[['team', 'skill_position_score', 'wr_score', 'rb_score',
+                                'current_wrs', 'current_rbs']],
+                on='team', how='left'
+            )
+
         if len(situational) > 0:
             all_factors = all_factors.merge(
                 situational[['team', 'situational_score']],
@@ -554,6 +977,7 @@ class FactorCalculator:
 
         # Fill NaN with 50 (average)
         score_cols = ['qb_quality_score', 'efficiency_score', 'line_play_score',
+                      'skill_position_score', 'wr_score', 'rb_score',
                       'situational_score', 'luck_regression_score']
         for col in score_cols:
             if col in all_factors.columns:
@@ -566,6 +990,8 @@ class FactorCalculator:
             efficiency.to_csv(PROCESSED_DIR / "factor_efficiency.csv", index=False)
         if len(line_play) > 0:
             line_play.to_csv(PROCESSED_DIR / "factor_line_play.csv", index=False)
+        if len(skill_positions) > 0:
+            skill_positions.to_csv(PROCESSED_DIR / "factor_skill_positions.csv", index=False)
         if len(situational) > 0:
             situational.to_csv(PROCESSED_DIR / "factor_situational.csv", index=False)
         if len(luck) > 0:

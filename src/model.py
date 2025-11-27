@@ -15,46 +15,72 @@ OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Weight profiles per spec
 WEIGHT_PROFILES = {
-    'A_baseline': {
+    'baseline': {
         'name': 'Baseline',
+        'description': 'Balanced starting point',
         'qb_quality': 0.30,
         'efficiency': 0.25,
         'line_play': 0.20,
         'situational': 0.15,
         'luck_regression': 0.10
     },
-    'B_qb_heavy': {
+    'qb_heavy': {
         'name': 'QB Heavy',
+        'description': 'Playoffs are QB battles',
         'qb_quality': 0.45,
         'efficiency': 0.20,
         'line_play': 0.15,
         'situational': 0.12,
         'luck_regression': 0.08
     },
-    'C_line_heavy': {
+    'line_heavy': {
         'name': 'Line Heavy',
+        'description': 'OL is undervalued by market',
         'qb_quality': 0.25,
         'efficiency': 0.20,
         'line_play': 0.30,
         'situational': 0.15,
         'luck_regression': 0.10
     },
-    'D_efficiency_pure': {
+    'efficiency_pure': {
         'name': 'Efficiency Pure',
+        'description': 'Trust Elo and EPA most',
         'qb_quality': 0.20,
         'efficiency': 0.40,
         'line_play': 0.15,
         'situational': 0.15,
         'luck_regression': 0.10
     },
-    'E_anti_luck': {
+    'anti_luck': {
         'name': 'Anti-Luck',
+        'description': 'Market ignores regression',
         'qb_quality': 0.25,
         'efficiency': 0.20,
         'line_play': 0.15,
         'situational': 0.15,
         'luck_regression': 0.25
     }
+}
+
+# Methodology explanation
+METHODOLOGY = {
+    'team_elo': {
+        'source': 'FiveThirtyEight',
+        'k_factor': 20,
+        'start_elo': 1505,
+        'home_advantage': 48,
+        'season_regression': '1/3 toward 1505',
+        'mov_formula': 'ln(PD+1) * (2.2 / (elo_diff * 0.001 + 2.2))',
+        'playoff_multiplier': 1.2
+    },
+    'unit_elo': {
+        'source': 'Custom',
+        'offensive': 'Points scored vs opponent defensive Elo',
+        'defensive': 'Points allowed vs opponent offensive Elo',
+        'special_teams': 'FG%, return yards, field position'
+    },
+    'data_lookback': '1.5 seasons (70% current, 30% last)',
+    'rolling_window': '5-game average weighted against season average'
 }
 
 
@@ -115,7 +141,7 @@ class NFLModel:
         # Score with each profile
         for profile_key, profile in WEIGHT_PROFILES.items():
             profile_name = profile['name']
-            weights = {k: v for k, v in profile.items() if k != 'name'}
+            weights = {k: v for k, v in profile.items() if k not in ['name', 'description']}
 
             results[f'score_{profile_key}'] = self.factors.apply(
                 lambda row: self.calculate_composite_score(row, weights),
@@ -258,6 +284,123 @@ class NFLModel:
             'probabilities': probs,
             'divergence': divergence
         }
+
+    def get_all_profile_probabilities(self) -> pd.DataFrame:
+        """
+        Calculate Super Bowl probabilities for ALL weight profiles.
+        Returns a table comparing all profiles side by side.
+        """
+        if self.scores is None:
+            self.score_all_teams()
+
+        results = self.scores[['team']].copy()
+
+        # Add primary QB if available
+        if 'primary_qb' in self.scores.columns:
+            results['primary_qb'] = self.scores['primary_qb']
+
+        # Calculate probabilities for each profile
+        for profile_key in WEIGHT_PROFILES.keys():
+            score_col = f'score_{profile_key}'
+            if score_col in self.scores.columns:
+                # Convert scores to probabilities
+                raw_probs = self.scores[score_col].apply(
+                    lambda x: self.convert_to_win_probability(x, scale_factor=0.05)
+                )
+                # Power transformation and normalize
+                power_probs = raw_probs ** 1.5
+                total = power_probs.sum()
+                results[f'prob_{profile_key}'] = (power_probs / total * 100).round(1)
+
+        # Calculate average probability across profiles
+        prob_cols = [col for col in results.columns if col.startswith('prob_')]
+        results['prob_average'] = results[prob_cols].mean(axis=1).round(1)
+
+        # Calculate spread (max - min) as uncertainty measure
+        results['prob_spread'] = (results[prob_cols].max(axis=1) - results[prob_cols].min(axis=1)).round(1)
+
+        # Sort by average probability
+        results = results.sort_values('prob_average', ascending=False).reset_index(drop=True)
+
+        return results
+
+    def get_team_factor_breakdown(self, team: str) -> Dict:
+        """
+        Get detailed factor breakdown for a specific team.
+        Shows how each factor contributes to the team's score.
+        """
+        if self.factors is None:
+            self.load_factors()
+
+        if self.factors is None:
+            return {'error': 'No factors available'}
+
+        team_row = self.factors[self.factors['team'] == team]
+        if len(team_row) == 0:
+            return {'error': f'Team {team} not found'}
+
+        team_row = team_row.iloc[0]
+
+        # Factor details
+        factor_details = []
+        factor_cols = {
+            'qb_quality_score': {'name': 'QB Quality', 'weight_key': 'qb_quality'},
+            'efficiency_score': {'name': 'Team Efficiency', 'weight_key': 'efficiency'},
+            'line_play_score': {'name': 'Line Play', 'weight_key': 'line_play'},
+            'situational_score': {'name': 'Situational', 'weight_key': 'situational'},
+            'luck_regression_score': {'name': 'Luck Regression', 'weight_key': 'luck_regression'}
+        }
+
+        for col, info in factor_cols.items():
+            if col in team_row.index:
+                score = team_row[col]
+                factor_details.append({
+                    'factor': info['name'],
+                    'score': round(score, 1) if pd.notna(score) else 0,
+                    'normalized': round(score, 0) if pd.notna(score) else 0,
+                    'weight_key': info['weight_key']
+                })
+
+        # Calculate contributions by profile
+        contributions_by_profile = {}
+        for profile_key, profile in WEIGHT_PROFILES.items():
+            profile_contributions = []
+            weights = {k: v for k, v in profile.items() if k not in ['name', 'description']}
+            total_contribution = 0
+
+            for factor in factor_details:
+                weight = weights.get(factor['weight_key'], 0)
+                contribution = factor['score'] * weight
+                total_contribution += contribution
+                profile_contributions.append({
+                    'factor': factor['factor'],
+                    'score': factor['score'],
+                    'weight': f"{int(weight * 100)}%",
+                    'contribution': round(contribution, 1)
+                })
+
+            contributions_by_profile[profile_key] = {
+                'name': profile['name'],
+                'factors': profile_contributions,
+                'total_score': round(total_contribution, 1)
+            }
+
+        return {
+            'team': team,
+            'primary_qb': team_row.get('primary_qb', 'N/A'),
+            'factor_scores': factor_details,
+            'contributions_by_profile': contributions_by_profile
+        }
+
+
+def get_methodology():
+    """Return the methodology explanation"""
+    return METHODOLOGY
+
+
+def get_weight_profiles():
+    """Return all weight profiles"""
+    return WEIGHT_PROFILES
 
 
 if __name__ == "__main__":

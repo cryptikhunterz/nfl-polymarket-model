@@ -1,0 +1,6 @@
+{
+  "data_source": "csv",
+  "api_key": null,
+  "csv_path": null,
+  "cache_hours": 24
+}

@@ -20,7 +20,7 @@
         }
 
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -64,8 +64,14 @@
             gap: 20px;
         }
 
-        @media (max-width: 1000px) {
-            .grid {
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+
+        @media (max-width: 1200px) {
+            .grid, .grid-3 {
                 grid-template-columns: 1fr;
             }
         }
@@ -84,6 +90,11 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            cursor: pointer;
+        }
+
+        .panel-header:hover {
+            background: #1a2744;
         }
 
         .panel-title {
@@ -94,6 +105,19 @@
 
         .panel-content {
             padding: 16px;
+        }
+
+        .panel-content.collapsed {
+            display: none;
+        }
+
+        .toggle-icon {
+            color: #00d4ff;
+            transition: transform 0.3s;
+        }
+
+        .toggle-icon.collapsed {
+            transform: rotate(-90deg);
         }
 
         /* Controls */
@@ -148,12 +172,17 @@
             cursor: not-allowed;
         }
 
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 11px;
+        }
+
         /* Log Console */
         .log-console {
             background: #0d0d0d;
             border: 1px solid #2a2a4e;
             border-radius: 6px;
-            height: 400px;
+            height: 300px;
             overflow-y: auto;
             font-size: 12px;
             padding: 10px;
@@ -196,6 +225,8 @@
             text-align: left;
             font-weight: 600;
             border-bottom: 2px solid #0f3460;
+            position: sticky;
+            top: 0;
         }
 
         .data-table td {
@@ -207,8 +238,104 @@
             background: rgba(0, 212, 255, 0.05);
         }
 
+        .data-table tr.clickable {
+            cursor: pointer;
+        }
+
+        .data-table tr.clickable:hover {
+            background: rgba(0, 212, 255, 0.1);
+        }
+
         .positive { color: #51cf66; }
         .negative { color: #ff6b6b; }
+        .neutral { color: #ffd43b; }
+
+        /* Methodology Panel */
+        .methodology-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+
+        .methodology-item {
+            background: #0d0d0d;
+            border: 1px solid #2a2a4e;
+            border-radius: 6px;
+            padding: 12px;
+        }
+
+        .methodology-item h4 {
+            color: #00d4ff;
+            font-size: 13px;
+            margin-bottom: 8px;
+        }
+
+        .methodology-item p {
+            font-size: 11px;
+            color: #888;
+            margin: 4px 0;
+        }
+
+        .methodology-item code {
+            background: #16213e;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #ffd43b;
+            font-size: 10px;
+        }
+
+        /* Weight Profile Tabs */
+        .profile-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .profile-tab {
+            padding: 8px 16px;
+            background: #16213e;
+            border: 1px solid #2a2a4e;
+            border-radius: 6px;
+            color: #888;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        .profile-tab:hover {
+            border-color: #00d4ff;
+            color: #00d4ff;
+        }
+
+        .profile-tab.active {
+            background: #00d4ff;
+            color: #0a0a0a;
+            border-color: #00d4ff;
+        }
+
+        .profile-weights {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+
+        .weight-badge {
+            background: #16213e;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .weight-badge .label {
+            color: #888;
+        }
+
+        .weight-badge .value {
+            color: #00d4ff;
+            font-weight: bold;
+        }
 
         /* Allocations Card */
         .allocation-card {
@@ -217,6 +344,12 @@
             border-radius: 6px;
             padding: 12px;
             margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .allocation-card:hover {
+            border-color: #00d4ff;
         }
 
         .allocation-team {
@@ -260,6 +393,12 @@
             margin-bottom: 20px;
         }
 
+        @media (max-width: 800px) {
+            .summary-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
         .summary-card {
             background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
             border: 1px solid #2a2a4e;
@@ -282,6 +421,156 @@
 
         .full-width {
             grid-column: 1 / -1;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            overflow-y: auto;
+        }
+
+        .modal.show {
+            display: block;
+        }
+
+        .modal-content {
+            background: #1a1a2e;
+            margin: 50px auto;
+            padding: 0;
+            border: 1px solid #2a2a4e;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 900px;
+        }
+
+        .modal-header {
+            background: #16213e;
+            padding: 16px 20px;
+            border-bottom: 1px solid #2a2a4e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            color: #00d4ff;
+            font-size: 18px;
+        }
+
+        .modal-close {
+            color: #888;
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        .modal-close:hover {
+            color: #ff6b6b;
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
+        /* Factor breakdown */
+        .factor-row {
+            display: flex;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid #2a2a4e;
+        }
+
+        .factor-name {
+            width: 150px;
+            color: #888;
+        }
+
+        .factor-score {
+            width: 60px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .factor-bar-container {
+            flex: 1;
+            height: 20px;
+            background: #0d0d0d;
+            border-radius: 4px;
+            margin: 0 15px;
+            overflow: hidden;
+        }
+
+        .factor-bar {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s;
+        }
+
+        .factor-contribution {
+            width: 80px;
+            text-align: right;
+            color: #00d4ff;
+        }
+
+        /* Profile comparison in modal */
+        .profile-probs {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin: 20px 0;
+        }
+
+        .profile-prob-card {
+            background: #0d0d0d;
+            border: 1px solid #2a2a4e;
+            border-radius: 6px;
+            padding: 12px;
+            text-align: center;
+        }
+
+        .profile-prob-name {
+            color: #888;
+            font-size: 11px;
+            margin-bottom: 5px;
+        }
+
+        .profile-prob-value {
+            color: #00d4ff;
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        /* Kelly calculation */
+        .kelly-formula {
+            background: #0d0d0d;
+            border: 1px solid #2a2a4e;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 15px;
+            font-size: 12px;
+        }
+
+        .kelly-formula h4 {
+            color: #00d4ff;
+            margin-bottom: 10px;
+        }
+
+        .kelly-step {
+            padding: 5px 0;
+            color: #888;
+        }
+
+        .kelly-step code {
+            background: #16213e;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #ffd43b;
         }
 
         /* Scrollbar */
@@ -314,6 +603,33 @@
 
         .clear-btn:hover {
             border-color: #ff6b6b;
+            color: #ff6b6b;
+        }
+
+        .table-scroll {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .confidence-badge {
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .confidence-high {
+            background: rgba(81, 207, 102, 0.2);
+            color: #51cf66;
+        }
+
+        .confidence-medium {
+            background: rgba(255, 212, 59, 0.2);
+            color: #ffd43b;
+        }
+
+        .confidence-low {
+            background: rgba(255, 107, 107, 0.2);
             color: #ff6b6b;
         }
     </style>
@@ -372,19 +688,128 @@
             <button class="btn btn-primary" onclick="runPipeline('simulate')" id="btnSim">
                 Run Simulation
             </button>
-            <button class="btn btn-primary" onclick="loadResults()" id="btnRefresh">
+            <button class="btn btn-warning" onclick="runPipeline('starters')" id="btnStarters">
+                Refresh Starters
+            </button>
+            <button class="btn btn-primary" onclick="loadResults(); loadAllProfiles(); loadMarketPrices();" id="btnRefresh">
                 Refresh Results
             </button>
+        </div>
+
+        <!-- Methodology Panel (Collapsible) -->
+        <div class="panel" style="margin-bottom: 20px;">
+            <div class="panel-header" onclick="togglePanel('methodologyContent', 'methodologyIcon')">
+                <span class="panel-title">METHODOLOGY</span>
+                <span class="toggle-icon collapsed" id="methodologyIcon">&#9660;</span>
+            </div>
+            <div class="panel-content collapsed" id="methodologyContent">
+                <div class="methodology-grid">
+                    <div class="methodology-item">
+                        <h4>Team Elo (FiveThirtyEight)</h4>
+                        <p>K-factor: <code>20</code></p>
+                        <p>Home advantage: <code>48 Elo points</code></p>
+                        <p>Season regression: <code>1/3 toward 1505</code></p>
+                        <p>Starting Elo: <code>1505</code></p>
+                    </div>
+                    <div class="methodology-item">
+                        <h4>MOV Multiplier</h4>
+                        <p>Formula:</p>
+                        <p><code>ln(PD+1) * (2.2 / (elo_diff * 0.001 + 2.2))</code></p>
+                        <p>Playoff multiplier: <code>1.2x</code></p>
+                    </div>
+                    <div class="methodology-item">
+                        <h4>Unit Elo (Custom)</h4>
+                        <p>Offensive: Points scored vs opponent defensive Elo</p>
+                        <p>Defensive: Points allowed vs opponent offensive Elo</p>
+                        <p>Special Teams: FG%, returns, field position</p>
+                    </div>
+                    <div class="methodology-item">
+                        <h4>Data Lookback</h4>
+                        <p>Window: <code>1.5 seasons (70% current, 30% last)</code></p>
+                        <p>Rolling: <code>5-game average</code></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Weight Profiles Panel -->
+        <div class="panel" style="margin-bottom: 20px;">
+            <div class="panel-header" onclick="togglePanel('profilesContent', 'profilesIcon')">
+                <span class="panel-title">WEIGHT PROFILES</span>
+                <span class="toggle-icon" id="profilesIcon">&#9660;</span>
+            </div>
+            <div class="panel-content" id="profilesContent">
+                <div class="profile-tabs" id="profileTabs">
+                    <div class="profile-tab active" data-profile="baseline" onclick="selectProfile('baseline')">
+                        Baseline
+                    </div>
+                    <div class="profile-tab" data-profile="qb_heavy" onclick="selectProfile('qb_heavy')">
+                        QB Heavy
+                    </div>
+                    <div class="profile-tab" data-profile="line_heavy" onclick="selectProfile('line_heavy')">
+                        Line Heavy
+                    </div>
+                    <div class="profile-tab" data-profile="efficiency_pure" onclick="selectProfile('efficiency_pure')">
+                        Efficiency Pure
+                    </div>
+                    <div class="profile-tab" data-profile="anti_luck" onclick="selectProfile('anti_luck')">
+                        Anti-Luck
+                    </div>
+                </div>
+                <div id="profileDescription" style="color: #888; font-size: 12px; margin-bottom: 10px;">
+                    Balanced starting point
+                </div>
+                <div class="profile-weights" id="profileWeights">
+                    <div class="weight-badge"><span class="label">QB: </span><span class="value">30%</span></div>
+                    <div class="weight-badge"><span class="label">Efficiency: </span><span class="value">25%</span></div>
+                    <div class="weight-badge"><span class="label">Line: </span><span class="value">20%</span></div>
+                    <div class="weight-badge"><span class="label">Situational: </span><span class="value">15%</span></div>
+                    <div class="weight-badge"><span class="label">Luck: </span><span class="value">10%</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- All Profiles Comparison -->
+        <div class="panel full-width" style="margin-bottom: 20px;">
+            <div class="panel-header" onclick="togglePanel('allProfilesContent', 'allProfilesIcon')">
+                <span class="panel-title">ALL PROFILES COMPARISON</span>
+                <span class="toggle-icon" id="allProfilesIcon">&#9660;</span>
+            </div>
+            <div class="panel-content" id="allProfilesContent">
+                <div class="table-scroll">
+                    <table class="data-table" id="allProfilesTable">
+                        <thead>
+                            <tr>
+                                <th>Team</th>
+                                <th>Baseline</th>
+                                <th>QB Heavy</th>
+                                <th>Line Heavy</th>
+                                <th>Efficiency</th>
+                                <th>Anti-Luck</th>
+                                <th>Average</th>
+                                <th>Spread</th>
+                                <th>Market</th>
+                                <th>Edge</th>
+                                <th>Confidence</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <div class="grid">
             <!-- Log Console -->
             <div class="panel full-width">
-                <div class="panel-header">
+                <div class="panel-header" onclick="togglePanel('logContent', 'logIcon')">
                     <span class="panel-title">LIVE LOG OUTPUT</span>
-                    <button class="clear-btn" onclick="clearLogs()">Clear</button>
+                    <div>
+                        <button class="clear-btn" onclick="event.stopPropagation(); clearLogs();">Clear</button>
+                        <span class="toggle-icon" id="logIcon">&#9660;</span>
+                    </div>
                 </div>
-                <div class="panel-content">
+                <div class="panel-content" id="logContent">
                     <div class="log-console" id="logConsole"></div>
                 </div>
             </div>
@@ -405,16 +830,18 @@
                     <span class="panel-title">ELO RANKINGS (538 Method)</span>
                 </div>
                 <div class="panel-content">
-                    <table class="data-table" id="eloTable">
-                        <thead>
-                            <tr>
-                                <th>Rank</th>
-                                <th>Team</th>
-                                <th>Elo</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
+                    <div class="table-scroll" style="max-height: 350px;">
+                        <table class="data-table" id="eloTable">
+                            <thead>
+                                <tr>
+                                    <th>Rank</th>
+                                    <th>Team</th>
+                                    <th>Elo</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
@@ -424,16 +851,18 @@
                     <span class="panel-title">MONTE CARLO SIMULATION</span>
                 </div>
                 <div class="panel-content">
-                    <table class="data-table" id="simTable">
-                        <thead>
-                            <tr>
-                                <th>Team</th>
-                                <th>SB Win %</th>
-                                <th>SB App %</th>
-                            </tr>
-                        </thead>
-                        <tbody></tbody>
-                    </table>
+                    <div class="table-scroll" style="max-height: 350px;">
+                        <table class="data-table" id="simTable">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                                    <th>SB Win %</th>
+                                    <th>SB App %</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
@@ -443,18 +872,334 @@
                     <span class="panel-title">BETTING EDGES</span>
                 </div>
                 <div class="panel-content">
-                    <table class="data-table" id="edgesTable">
+                    <div class="table-scroll" style="max-height: 350px;">
+                        <table class="data-table" id="edgesTable">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                                    <th>Model %</th>
+                                    <th>Market %</th>
+                                    <th>Edge</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Market Prices Debug Panel (Full Width) -->
+        <div class="panel full-width" style="margin-top: 20px;">
+            <div class="panel-header" onclick="togglePanel('marketPricesContent', 'marketPricesIcon')">
+                <span class="panel-title">MARKET PRICES (Debug View)</span>
+                <span class="toggle-icon" id="marketPricesIcon">&#9660;</span>
+            </div>
+            <div class="panel-content" id="marketPricesContent">
+                <div style="margin-bottom: 10px; color: #888; font-size: 12px;">
+                    Full calculation chain: Model Prob → Market Price → Edge → Kelly % → Allocation
+                </div>
+                <div class="table-scroll" style="max-height: 400px;">
+                    <table class="data-table" id="marketPricesTable">
                         <thead>
                             <tr>
                                 <th>Team</th>
-                                <th>Model %</th>
-                                <th>Market %</th>
+                                <th>Model Prob</th>
+                                <th>Market Price</th>
                                 <th>Edge</th>
+                                <th>Kelly %</th>
+                                <th>Allocation</th>
+                                <th>Status</th>
                             </tr>
                         </thead>
                         <tbody></tbody>
                     </table>
                 </div>
+                <div id="marketPricesSummary" style="margin-top: 10px; padding: 10px; background: #0d0d0d; border-radius: 6px; font-size: 12px;">
+                    <span style="color: #888;">Total Allocated: </span>
+                    <span id="debugTotalAllocated" style="color: #51cf66;">$0.00</span>
+                    <span style="margin: 0 15px; color: #666;">|</span>
+                    <span style="color: #888;">Positions: </span>
+                    <span id="debugPositionsCount" style="color: #00d4ff;">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- PFF Settings Panel -->
+        <div class="panel full-width" style="margin-top: 20px;">
+            <div class="panel-header" onclick="togglePanel('pffContent', 'pffIcon')">
+                <span class="panel-title">PRO FOOTBALL FOCUS (PFF) SETTINGS</span>
+                <span class="toggle-icon collapsed" id="pffIcon">&#9660;</span>
+            </div>
+            <div class="panel-content collapsed" id="pffContent">
+                <div style="margin-bottom: 20px;">
+                    <p style="color: #888; font-size: 12px; margin-bottom: 15px;">
+                        PFF provides advanced metrics for Line Play (20% weight) and Luck Regression (10% weight) factors.
+                        Configure your PFF data source below.
+                    </p>
+
+                    <!-- Data Source Selection -->
+                    <div style="margin-bottom: 15px;">
+                        <label style="color: #00d4ff; font-size: 13px; display: block; margin-bottom: 8px;">Data Source</label>
+                        <div style="display: flex; gap: 10px;">
+                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                <input type="radio" name="pffDataSource" value="mock" checked onchange="updatePffSource()">
+                                <span style="color: #e0e0e0; font-size: 12px;">Mock Data (Testing)</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                <input type="radio" name="pffDataSource" value="csv" onchange="updatePffSource()">
+                                <span style="color: #e0e0e0; font-size: 12px;">CSV Upload</span>
+                            </label>
+                            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                                <input type="radio" name="pffDataSource" value="api" onchange="updatePffSource()">
+                                <span style="color: #e0e0e0; font-size: 12px;">PFF API</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- API Configuration (shown when API is selected) -->
+                    <div id="pffApiConfig" style="display: none; margin-bottom: 15px; padding: 15px; background: #0d0d0d; border-radius: 6px;">
+                        <label style="color: #00d4ff; font-size: 13px; display: block; margin-bottom: 8px;">PFF API Key</label>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="password" id="pffApiKey" placeholder="Enter your PFF API key"
+                                style="flex: 1; padding: 10px; background: #16213e; border: 1px solid #2a2a4e; border-radius: 6px; color: #e0e0e0; font-family: inherit;">
+                            <button class="btn btn-primary btn-small" onclick="testPffConnection()">Test Connection</button>
+                        </div>
+                        <p id="pffConnectionStatus" style="color: #666; font-size: 11px; margin-top: 8px;"></p>
+                    </div>
+
+                    <!-- CSV Upload (shown when CSV is selected) -->
+                    <div id="pffCsvConfig" style="display: none; margin-bottom: 15px; padding: 15px; background: #0d0d0d; border-radius: 6px;">
+                        <div style="margin-bottom: 15px;">
+                            <label style="color: #00d4ff; font-size: 13px; display: block; margin-bottom: 8px;">Upload Line Play Metrics CSV</label>
+                            <p style="color: #666; font-size: 11px; margin-bottom: 8px;">Required columns: team, ol_pass_block_win_rate, pressure_rate_allowed</p>
+                            <input type="file" id="pffLinePlayFile" accept=".csv"
+                                style="font-size: 12px; color: #888;">
+                            <button class="btn btn-small" onclick="uploadPffCsv('line_play')" style="margin-left: 10px;">Upload</button>
+                        </div>
+                        <div>
+                            <label style="color: #00d4ff; font-size: 13px; display: block; margin-bottom: 8px;">Upload Luck Regression Metrics CSV</label>
+                            <p style="color: #666; font-size: 11px; margin-bottom: 8px;">Required columns: team, interceptable_passes, actual_interceptions</p>
+                            <input type="file" id="pffLuckFile" accept=".csv"
+                                style="font-size: 12px; color: #888;">
+                            <button class="btn btn-small" onclick="uploadPffCsv('luck')" style="margin-left: 10px;">Upload</button>
+                        </div>
+                    </div>
+
+                    <!-- Screenshot Upload (Drag & Drop) -->
+                    <div style="margin-bottom: 15px; padding: 15px; background: #0d0d0d; border-radius: 6px;">
+                        <label style="color: #00d4ff; font-size: 13px; display: block; margin-bottom: 8px;">
+                            Upload PFF Screenshots (Drag & Drop)
+                        </label>
+                        <p style="color: #666; font-size: 11px; margin-bottom: 12px;">
+                            Screenshot the PFF team stats tables and drop them here. The data will be extracted and saved to CSV.
+                        </p>
+
+                        <div id="pffScreenshotDropzone"
+                            style="border: 2px dashed #2a2a4e; border-radius: 8px; padding: 40px 20px; text-align: center;
+                                   background: #16213e; cursor: pointer; transition: all 0.3s ease;"
+                            ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)"
+                            ondrop="handleScreenshotDrop(event)" onclick="document.getElementById('pffScreenshotInput').click()">
+                            <div style="color: #00d4ff; font-size: 32px; margin-bottom: 10px;">📸</div>
+                            <div style="color: #e0e0e0; font-size: 14px; margin-bottom: 5px;">Drop PFF screenshots here</div>
+                            <div style="color: #666; font-size: 12px;">or click to select files</div>
+                            <input type="file" id="pffScreenshotInput" accept="image/*" multiple
+                                   style="display: none;" onchange="handleScreenshotSelect(event)">
+                        </div>
+
+                        <!-- Upload Progress -->
+                        <div id="pffUploadProgress" style="display: none; margin-top: 15px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <div class="status-indicator running"></div>
+                                <span id="pffUploadStatus" style="color: #ff9800; font-size: 12px;">Processing screenshots...</span>
+                            </div>
+                        </div>
+
+                        <!-- Preview Area -->
+                        <div id="pffScreenshotPreview" style="display: none; margin-top: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <h5 style="color: #00d4ff; font-size: 12px; margin: 0;">Uploaded Screenshots:</h5>
+                                <button class="btn btn-small" onclick="clearPffScreenshots()" style="font-size: 10px; padding: 3px 8px;">Clear All</button>
+                            </div>
+                            <div id="pffScreenshotList" style="display: flex; flex-wrap: wrap; gap: 10px;"></div>
+                        </div>
+
+                        <!-- Extracted Data Preview -->
+                        <div id="pffExtractedData" style="display: none; margin-top: 15px; padding: 10px; background: #1a1a2e; border-radius: 6px;">
+                            <h5 style="color: #51cf66; font-size: 12px; margin-bottom: 10px;">Extracted Data:</h5>
+                            <pre id="pffExtractedPreview" style="color: #e0e0e0; font-size: 11px; max-height: 200px; overflow: auto; white-space: pre-wrap;"></pre>
+                            <button class="btn btn-success btn-small" onclick="savePffExtractedData()" style="margin-top: 10px;">
+                                Save to CSV
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Save Button -->
+                    <div style="margin-bottom: 20px;">
+                        <button class="btn btn-success" onclick="savePffConfig()">Save PFF Configuration</button>
+                        <span id="pffSaveStatus" style="color: #51cf66; font-size: 12px; margin-left: 10px;"></span>
+                    </div>
+
+                    <!-- Status Display -->
+                    <div style="padding: 15px; background: #0d0d0d; border-radius: 6px;">
+                        <h4 style="color: #00d4ff; margin-bottom: 10px; font-size: 13px;">Current Status</h4>
+                        <div id="pffStatus" style="font-size: 12px;">
+                            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+                                <div>
+                                    <span style="color: #666;">Data Source:</span>
+                                    <span id="pffStatusSource" style="color: #e0e0e0;">Mock</span>
+                                </div>
+                                <div>
+                                    <span style="color: #666;">API Configured:</span>
+                                    <span id="pffStatusApi" style="color: #e0e0e0;">No</span>
+                                </div>
+                                <div>
+                                    <span style="color: #666;">Line Play CSV:</span>
+                                    <span id="pffStatusLineCsv" style="color: #e0e0e0;">Not uploaded</span>
+                                </div>
+                                <div>
+                                    <span style="color: #666;">Luck CSV:</span>
+                                    <span id="pffStatusLuckCsv" style="color: #e0e0e0;">Not uploaded</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PFF Metrics Preview -->
+                <div style="margin-top: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h4 style="color: #00d4ff; font-size: 13px;">PFF Metrics Preview</h4>
+                        <button class="btn btn-small" onclick="loadPffMetrics()">Refresh Metrics</button>
+                    </div>
+                    <div class="table-scroll" style="max-height: 300px;">
+                        <table class="data-table" id="pffMetricsTable">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                                    <th>OL Pass Block %</th>
+                                    <th>Pressure Rate</th>
+                                    <th>Line Score</th>
+                                    <th>INT Luck</th>
+                                    <th>QB Grade</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr><td colspan="6" style="text-align: center; color: #666;">Click "Refresh Metrics" to load data</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Next Gen Stats Panel -->
+                <div style="margin-top: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h4 style="color: #00d4ff; font-size: 13px;">Next Gen Stats - Separation (2025)</h4>
+                        <div>
+                            <span id="ngsLastUpdated" style="color: #666; font-size: 11px; margin-right: 10px;"></span>
+                            <button class="btn btn-small" onclick="loadNgsData()">Refresh NGS</button>
+                        </div>
+                    </div>
+                    <div id="ngsStatus" style="margin-bottom: 10px; padding: 8px; background: #0d0d0d; border-radius: 4px;">
+                        <span style="color: #666;">Loading NGS status...</span>
+                    </div>
+
+                    <!-- Two columns: Season Leaders and Team Separation -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <!-- Season Separation Leaders -->
+                        <div>
+                            <h5 style="color: #888; font-size: 12px; margin-bottom: 8px;">Top Receivers (Season)</h5>
+                            <div class="table-scroll" style="max-height: 250px;">
+                                <table class="data-table" id="ngsSeasonTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Player</th>
+                                            <th>Team</th>
+                                            <th>Sep</th>
+                                            <th>Tgt</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr><td colspan="4" style="text-align: center; color: #666;">Click "Refresh NGS"</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Team Separation 4-Week MA -->
+                        <div>
+                            <h5 style="color: #888; font-size: 12px; margin-bottom: 8px;">Team Separation (4-Week MA)</h5>
+                            <div class="table-scroll" style="max-height: 250px;">
+                                <table class="data-table" id="ngsTeamTable">
+                                    <thead>
+                                        <tr>
+                                            <th>Team</th>
+                                            <th>Separation</th>
+                                            <th>Games</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr><td colspan="3" style="text-align: center; color: #666;">Click "Refresh NGS"</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Audit Report Panel -->
+        <div class="panel full-width" style="margin-top: 20px;">
+            <div class="panel-header" onclick="togglePanel('auditContent', 'auditIcon')">
+                <span class="panel-title">AUDIT & VERIFICATION REPORT</span>
+                <span class="toggle-icon collapsed" id="auditIcon">&#9660;</span>
+            </div>
+            <div class="panel-content collapsed" id="auditContent">
+                <div id="auditSummary" style="margin-bottom: 15px;">
+                    <div class="summary-grid" style="grid-template-columns: repeat(5, 1fr);">
+                        <div class="summary-card">
+                            <div class="summary-value" id="auditStatus">-</div>
+                            <div class="summary-label">Overall Status</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" id="auditApiCalls">0</div>
+                            <div class="summary-label">API Calls</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" id="auditSanityPassed">0/0</div>
+                            <div class="summary-label">Sanity Checks</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" id="auditWarnings">0</div>
+                            <div class="summary-label">Warnings</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" id="auditErrors">0</div>
+                            <div class="summary-label">Errors</div>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <button class="btn btn-primary btn-small" onclick="loadAuditReport()">Refresh Audit</button>
+                    <button class="btn btn-small" onclick="viewFullAuditReport()" style="margin-left: 10px;">View Full Report</button>
+                </div>
+                <div id="auditDetails" style="background: #0d0d0d; border-radius: 6px; padding: 15px; max-height: 300px; overflow-y: auto;">
+                    <p style="color: #666;">Run the pipeline to generate audit report</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Team Detail Modal -->
+    <div class="modal" id="teamModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="modal-title" id="modalTeamName">Team Breakdown</span>
+                <span class="modal-close" onclick="closeModal()">&times;</span>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Content loaded dynamically -->
             </div>
         </div>
     </div>
@@ -462,6 +1207,9 @@
     <script>
         const socket = io();
         let isRunning = false;
+        let profiles = {};
+        let currentProfile = 'baseline';
+        let allProfilesData = null;
 
         // Socket event handlers
         socket.on('connect', () => {
@@ -486,10 +1234,19 @@
             if (data.success) {
                 addLog('Pipeline completed successfully!', 'success');
                 loadResults();
+                loadAllProfiles();
+                loadMarketPrices();
             } else {
                 addLog('Pipeline failed: ' + data.error, 'error');
             }
         });
+
+        function togglePanel(contentId, iconId) {
+            const content = document.getElementById(contentId);
+            const icon = document.getElementById(iconId);
+            content.classList.toggle('collapsed');
+            icon.classList.toggle('collapsed');
+        }
 
         function addLog(message, type = 'info', timestamp = null) {
             const console = document.getElementById('logConsole');
@@ -543,6 +1300,222 @@
             }
         }
 
+        async function loadProfiles() {
+            try {
+                const response = await fetch('/api/profiles');
+                profiles = await response.json();
+            } catch (error) {
+                console.error('Failed to load profiles:', error);
+            }
+        }
+
+        function selectProfile(profileKey) {
+            currentProfile = profileKey;
+
+            // Update tabs
+            document.querySelectorAll('.profile-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.profile === profileKey);
+            });
+
+            // Update weights display
+            const profile = profiles[profileKey];
+            if (profile) {
+                document.getElementById('profileDescription').textContent = profile.description || '';
+                document.getElementById('profileWeights').innerHTML = `
+                    <div class="weight-badge"><span class="label">QB: </span><span class="value">${Math.round(profile.qb_quality * 100)}%</span></div>
+                    <div class="weight-badge"><span class="label">Efficiency: </span><span class="value">${Math.round(profile.efficiency * 100)}%</span></div>
+                    <div class="weight-badge"><span class="label">Line: </span><span class="value">${Math.round(profile.line_play * 100)}%</span></div>
+                    <div class="weight-badge"><span class="label">Situational: </span><span class="value">${Math.round(profile.situational * 100)}%</span></div>
+                    <div class="weight-badge"><span class="label">Luck: </span><span class="value">${Math.round(profile.luck_regression * 100)}%</span></div>
+                `;
+            }
+        }
+
+        async function loadAllProfiles() {
+            try {
+                const response = await fetch('/api/results/all-profiles');
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Error loading profiles:', data.error);
+                    return;
+                }
+
+                allProfilesData = data;
+                const tbody = document.querySelector('#allProfilesTable tbody');
+
+                tbody.innerHTML = data.teams.map(team => {
+                    const confidence = getConfidence(team.prob_spread);
+                    return `
+                        <tr class="clickable" onclick="showTeamBreakdown('${team.team}')">
+                            <td><strong>${team.team}</strong></td>
+                            <td>${team.prob_baseline?.toFixed(1) || '-'}%</td>
+                            <td>${team.prob_qb_heavy?.toFixed(1) || '-'}%</td>
+                            <td>${team.prob_line_heavy?.toFixed(1) || '-'}%</td>
+                            <td>${team.prob_efficiency_pure?.toFixed(1) || '-'}%</td>
+                            <td>${team.prob_anti_luck?.toFixed(1) || '-'}%</td>
+                            <td><strong>${team.prob_average?.toFixed(1) || '-'}%</strong></td>
+                            <td class="${team.prob_spread > 3 ? 'negative' : team.prob_spread > 1.5 ? 'neutral' : 'positive'}">${team.prob_spread?.toFixed(1) || '-'}%</td>
+                            <td>${team.market_price?.toFixed(1) || '-'}%</td>
+                            <td class="${team.edge > 0 ? 'positive' : 'negative'}">${team.edge > 0 ? '+' : ''}${team.edge?.toFixed(1) || '-'}%</td>
+                            <td><span class="confidence-badge confidence-${confidence.toLowerCase()}">${confidence}</span></td>
+                        </tr>
+                    `;
+                }).join('');
+
+                // Update top team
+                if (data.teams.length > 0) {
+                    document.getElementById('topTeam').textContent = data.teams[0].team;
+                }
+            } catch (error) {
+                console.error('Failed to load all profiles:', error);
+            }
+        }
+
+        function getConfidence(spread) {
+            if (spread === null || spread === undefined) return 'MEDIUM';
+            if (spread < 1.5) return 'HIGH';
+            if (spread < 3) return 'MEDIUM';
+            return 'LOW';
+        }
+
+        async function showTeamBreakdown(team) {
+            try {
+                const response = await fetch(`/api/team/${team}/breakdown`);
+                const data = await response.json();
+
+                if (data.error) {
+                    addLog('Error: ' + data.error, 'error');
+                    return;
+                }
+
+                document.getElementById('modalTeamName').textContent = `${team} - Factor Breakdown`;
+
+                let html = `
+                    <h3 style="color: #00d4ff; margin-bottom: 15px;">${team} ${data.primary_qb ? '(' + data.primary_qb + ')' : ''}</h3>
+                `;
+
+                // Profile probabilities
+                if (data.probabilities) {
+                    html += `
+                        <div class="profile-probs">
+                            <div class="profile-prob-card">
+                                <div class="profile-prob-name">Baseline</div>
+                                <div class="profile-prob-value">${data.probabilities.baseline?.toFixed(1)}%</div>
+                            </div>
+                            <div class="profile-prob-card">
+                                <div class="profile-prob-name">QB Heavy</div>
+                                <div class="profile-prob-value">${data.probabilities.qb_heavy?.toFixed(1)}%</div>
+                            </div>
+                            <div class="profile-prob-card">
+                                <div class="profile-prob-name">Line Heavy</div>
+                                <div class="profile-prob-value">${data.probabilities.line_heavy?.toFixed(1)}%</div>
+                            </div>
+                            <div class="profile-prob-card">
+                                <div class="profile-prob-name">Efficiency</div>
+                                <div class="profile-prob-value">${data.probabilities.efficiency_pure?.toFixed(1)}%</div>
+                            </div>
+                            <div class="profile-prob-card">
+                                <div class="profile-prob-name">Anti-Luck</div>
+                                <div class="profile-prob-value">${data.probabilities.anti_luck?.toFixed(1)}%</div>
+                            </div>
+                            <div class="profile-prob-card" style="background: #16213e;">
+                                <div class="profile-prob-name">Average</div>
+                                <div class="profile-prob-value" style="color: #51cf66;">${data.probabilities.average?.toFixed(1)}%</div>
+                            </div>
+                        </div>
+                        <div style="text-align: center; margin-bottom: 20px;">
+                            <span style="color: #888;">Market: </span>
+                            <span style="color: #ffd43b; font-size: 18px;">${data.market_price?.toFixed(1)}%</span>
+                            <span style="margin: 0 15px; color: #666;">|</span>
+                            <span style="color: #888;">Edge: </span>
+                            <span class="${data.edge > 0 ? 'positive' : 'negative'}" style="font-size: 18px;">${data.edge > 0 ? '+' : ''}${data.edge?.toFixed(1)}%</span>
+                            <span style="margin: 0 15px; color: #666;">|</span>
+                            <span style="color: #888;">Spread: </span>
+                            <span class="${data.probabilities.spread > 3 ? 'negative' : 'positive'}" style="font-size: 18px;">${data.probabilities.spread?.toFixed(1)}%</span>
+                        </div>
+                    `;
+                }
+
+                // Factor breakdown
+                html += `<h4 style="color: #00d4ff; margin: 20px 0 10px;">Factor Scores (Baseline Profile)</h4>`;
+
+                if (data.contributions_by_profile && data.contributions_by_profile.baseline) {
+                    const factors = data.contributions_by_profile.baseline.factors;
+                    factors.forEach(f => {
+                        const barColor = f.score > 60 ? '#51cf66' : f.score > 40 ? '#ffd43b' : '#ff6b6b';
+                        html += `
+                            <div class="factor-row">
+                                <div class="factor-name">${f.factor}</div>
+                                <div class="factor-score" style="color: ${barColor}">${f.score?.toFixed(0)}</div>
+                                <div class="factor-bar-container">
+                                    <div class="factor-bar" style="width: ${Math.min(100, f.score)}%; background: ${barColor};"></div>
+                                </div>
+                                <div class="factor-contribution">${f.weight} = ${f.contribution?.toFixed(1)}</div>
+                            </div>
+                        `;
+                    });
+                    html += `
+                        <div class="factor-row" style="border-top: 2px solid #00d4ff; margin-top: 10px; padding-top: 10px;">
+                            <div class="factor-name" style="color: #00d4ff;">TOTAL</div>
+                            <div class="factor-score"></div>
+                            <div class="factor-bar-container"></div>
+                            <div class="factor-contribution" style="font-size: 16px;">${data.contributions_by_profile.baseline.total_score?.toFixed(1)}</div>
+                        </div>
+                    `;
+                }
+
+                // Load Kelly calculation
+                html += await loadKellyCalculation(team);
+
+                document.getElementById('modalBody').innerHTML = html;
+                document.getElementById('teamModal').classList.add('show');
+            } catch (error) {
+                addLog('Failed to load team breakdown: ' + error, 'error');
+            }
+        }
+
+        async function loadKellyCalculation(team) {
+            try {
+                const response = await fetch(`/api/kelly/${team}`);
+                const data = await response.json();
+
+                if (data.error) return '';
+
+                return `
+                    <div class="kelly-formula">
+                        <h4>Kelly Criterion Calculation</h4>
+                        <div class="kelly-step">Model Probability: <code>${data.model_probability}%</code></div>
+                        <div class="kelly-step">Market Probability: <code>${data.market_probability}%</code></div>
+                        <div class="kelly-step">Edge: <code>${data.edge > 0 ? '+' : ''}${data.edge}%</code></div>
+                        <div class="kelly-step">Implied Odds: <code>${data.implied_odds}x</code></div>
+                        <br>
+                        <div class="kelly-step">Formula: <code>${data.formula}</code></div>
+                        <br>
+                        <div class="kelly-step">Full Kelly: <code>${data.kelly_full}%</code> of bankroll</div>
+                        <div class="kelly-step">Half Kelly: <code>${data.kelly_half}%</code> of bankroll</div>
+                        <div class="kelly-step">Quarter Kelly: <code>${data.kelly_quarter}%</code> of bankroll</div>
+                        <br>
+                        <div class="kelly-step" style="color: #51cf66;">Recommended Allocation: <code>$${data.recommended_allocation}</code></div>
+                    </div>
+                `;
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('teamModal').classList.remove('show');
+        }
+
+        // Close modal on outside click
+        window.onclick = function(event) {
+            const modal = document.getElementById('teamModal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        }
+
         async function loadResults() {
             try {
                 const response = await fetch('/api/results');
@@ -552,7 +1525,7 @@
                 if (data.allocations && data.allocations.length > 0) {
                     const container = document.getElementById('allocationsContainer');
                     container.innerHTML = data.allocations.map(a => `
-                        <div class="allocation-card">
+                        <div class="allocation-card" onclick="showTeamBreakdown('${a.team}')">
                             <div class="allocation-team">${a.team}</div>
                             <div class="allocation-amount">$${a.allocation?.toFixed(2) || '0.00'}</div>
                             <div class="allocation-details">
@@ -582,21 +1555,19 @@
                 if (data.elo && data.elo.length > 0) {
                     const tbody = document.querySelector('#eloTable tbody');
                     tbody.innerHTML = data.elo.slice(0, 15).map(e => `
-                        <tr>
+                        <tr class="clickable" onclick="showTeamBreakdown('${e.team}')">
                             <td>${e.rank}</td>
                             <td>${e.team}</td>
                             <td>${e.team_elo?.toFixed(0)}</td>
                         </tr>
                     `).join('');
-
-                    document.getElementById('topTeam').textContent = data.elo[0]?.team || '-';
                 }
 
                 // Update simulation table
                 if (data.simulation && data.simulation.length > 0) {
                     const tbody = document.querySelector('#simTable tbody');
                     tbody.innerHTML = data.simulation.map(s => `
-                        <tr>
+                        <tr class="clickable" onclick="showTeamBreakdown('${s.team}')">
                             <td>${s.team}</td>
                             <td>${s.sb_win_pct?.toFixed(1)}%</td>
                             <td>${s.sb_appearance_pct?.toFixed(1)}%</td>
@@ -608,7 +1579,7 @@
                 if (data.edges && data.edges.length > 0) {
                     const tbody = document.querySelector('#edgesTable tbody');
                     tbody.innerHTML = data.edges.map(e => `
-                        <tr>
+                        <tr class="clickable" onclick="showTeamBreakdown('${e.team}')">
                             <td>${e.team}</td>
                             <td>${(e.model_prob * 100)?.toFixed(1)}%</td>
                             <td>${(e.implied_prob * 100)?.toFixed(1)}%</td>
@@ -631,8 +1602,567 @@
             }
         }
 
-        // Load results on page load
-        loadResults();
+        async function loadMarketPrices() {
+            try {
+                const response = await fetch('/api/market-prices');
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Error loading market prices:', data.error);
+                    return;
+                }
+
+                const tbody = document.querySelector('#marketPricesTable tbody');
+                tbody.innerHTML = data.prices.map(p => {
+                    let status = '';
+                    let statusClass = '';
+                    if (p.allocation > 0) {
+                        status = 'POSITION';
+                        statusClass = 'positive';
+                    } else if (p.strong_edge) {
+                        status = 'STRONG EDGE';
+                        statusClass = 'positive';
+                    } else if (p.has_edge) {
+                        status = 'HAS EDGE';
+                        statusClass = 'neutral';
+                    } else {
+                        status = 'NO EDGE';
+                        statusClass = 'negative';
+                    }
+
+                    return `
+                        <tr class="clickable" onclick="showTeamBreakdown('${p.team}')" style="${p.allocation > 0 ? 'background: rgba(81, 207, 102, 0.1);' : ''}">
+                            <td><strong>${p.team}</strong></td>
+                            <td>${p.model_prob}%</td>
+                            <td>${p.market_price}%</td>
+                            <td class="${p.edge > 0 ? 'positive' : 'negative'}">${p.edge > 0 ? '+' : ''}${p.edge}%</td>
+                            <td>${p.kelly_pct}%</td>
+                            <td class="${p.allocation > 0 ? 'positive' : ''}" style="font-weight: ${p.allocation > 0 ? 'bold' : 'normal'};">$${p.allocation.toFixed(2)}</td>
+                            <td><span class="${statusClass}">${status}</span></td>
+                        </tr>
+                    `;
+                }).join('');
+
+                // Update summary
+                document.getElementById('debugTotalAllocated').textContent = '$' + data.total_allocated.toFixed(2);
+                document.getElementById('debugPositionsCount').textContent = data.positions_count;
+
+            } catch (error) {
+                console.error('Failed to load market prices:', error);
+            }
+        }
+
+        async function loadAuditReport() {
+            try {
+                const response = await fetch('/api/audit');
+                const data = await response.json();
+
+                if (!data.available) {
+                    document.getElementById('auditDetails').innerHTML = '<p style="color: #666;">No audit report available. Run the pipeline first.</p>';
+                    return;
+                }
+
+                // Update summary cards
+                const summary = data.summary || {};
+                const statusColor = summary.overall_status === 'Verified' ? '#51cf66' :
+                                   summary.overall_status === 'Warning' ? '#ffd43b' : '#ff6b6b';
+                document.getElementById('auditStatus').innerHTML = `<span style="color: ${statusColor}">${summary.overall_status || '-'}</span>`;
+                document.getElementById('auditApiCalls').textContent = data.api_calls || 0;
+
+                const sanityChecks = summary.sanity_checks || {};
+                document.getElementById('auditSanityPassed').textContent = `${sanityChecks.passed || 0}/${sanityChecks.total || 0}`;
+                document.getElementById('auditWarnings').textContent = (data.warnings || []).length;
+                document.getElementById('auditErrors').textContent = (data.errors || []).length;
+
+                // Build details section
+                let detailsHtml = '';
+
+                // Warnings
+                if (data.warnings && data.warnings.length > 0) {
+                    detailsHtml += '<div style="margin-bottom: 15px;"><h4 style="color: #ffd43b; margin-bottom: 8px;">Warnings</h4>';
+                    data.warnings.forEach(w => {
+                        detailsHtml += `<div style="color: #ffd43b; font-size: 12px; padding: 4px 0;">- [${w.category}] ${w.message}</div>`;
+                    });
+                    detailsHtml += '</div>';
+                }
+
+                // Errors
+                if (data.errors && data.errors.length > 0) {
+                    detailsHtml += '<div style="margin-bottom: 15px;"><h4 style="color: #ff6b6b; margin-bottom: 8px;">Errors</h4>';
+                    data.errors.forEach(e => {
+                        detailsHtml += `<div style="color: #ff6b6b; font-size: 12px; padding: 4px 0;">- [${e.category}] ${e.message}</div>`;
+                    });
+                    detailsHtml += '</div>';
+                }
+
+                // Sanity Checks
+                if (data.sanity_checks && data.sanity_checks.length > 0) {
+                    detailsHtml += '<div style="margin-bottom: 15px;"><h4 style="color: #00d4ff; margin-bottom: 8px;">Sanity Checks</h4>';
+                    data.sanity_checks.slice(0, 10).forEach(c => {
+                        const checkColor = c.passed ? '#51cf66' : '#ff6b6b';
+                        detailsHtml += `<div style="font-size: 12px; padding: 4px 0;">
+                            <span style="color: ${checkColor};">${c.passed ? '✓' : '✗'}</span>
+                            ${c.check_name}: ${c.value}
+                            <span style="color: #666;">(${c.expected_min || '-'} to ${c.expected_max || '-'})</span>
+                        </div>`;
+                    });
+                    if (data.sanity_checks.length > 10) {
+                        detailsHtml += `<div style="color: #666; font-size: 11px;">...and ${data.sanity_checks.length - 10} more checks</div>`;
+                    }
+                    detailsHtml += '</div>';
+                }
+
+                // Session info
+                detailsHtml += `<div style="color: #666; font-size: 11px; margin-top: 10px;">
+                    Session ID: ${summary.session_id || 'N/A'} | Started: ${summary.session_start || 'N/A'}
+                </div>`;
+
+                document.getElementById('auditDetails').innerHTML = detailsHtml || '<p style="color: #51cf66;">All checks passed!</p>';
+                addLog('Audit report loaded', 'success');
+
+            } catch (error) {
+                console.error('Failed to load audit report:', error);
+                document.getElementById('auditDetails').innerHTML = '<p style="color: #ff6b6b;">Failed to load audit report</p>';
+            }
+        }
+
+        function viewFullAuditReport() {
+            window.open('/api/audit/report', '_blank');
+        }
+
+        // =====================
+        // PFF Functions
+        // =====================
+
+        function updatePffSource() {
+            const source = document.querySelector('input[name="pffDataSource"]:checked').value;
+            document.getElementById('pffApiConfig').style.display = source === 'api' ? 'block' : 'none';
+            document.getElementById('pffCsvConfig').style.display = source === 'csv' ? 'block' : 'none';
+        }
+
+        async function loadPffConfig() {
+            try {
+                const response = await fetch('/api/pff/config');
+                const config = await response.json();
+
+                // Set radio button
+                const sourceRadio = document.querySelector(`input[name="pffDataSource"][value="${config.data_source || 'mock'}"]`);
+                if (sourceRadio) {
+                    sourceRadio.checked = true;
+                    updatePffSource();
+                }
+
+                // Set API key if present
+                if (config.api_key) {
+                    document.getElementById('pffApiKey').value = config.api_key;
+                }
+
+                // Load status
+                await loadPffStatus();
+            } catch (error) {
+                console.error('Failed to load PFF config:', error);
+            }
+        }
+
+        async function loadPffStatus() {
+            try {
+                const response = await fetch('/api/pff/status');
+                const status = await response.json();
+
+                document.getElementById('pffStatusSource').textContent = status.data_source || 'mock';
+                document.getElementById('pffStatusApi').textContent = status.api_configured ? 'Yes' : 'No';
+                document.getElementById('pffStatusLineCsv').innerHTML = status.has_line_play_csv ?
+                    '<span style="color: #51cf66;">Uploaded</span>' : 'Not uploaded';
+                document.getElementById('pffStatusLuckCsv').innerHTML = status.has_luck_csv ?
+                    '<span style="color: #51cf66;">Uploaded</span>' : 'Not uploaded';
+            } catch (error) {
+                console.error('Failed to load PFF status:', error);
+            }
+        }
+
+        async function savePffConfig() {
+            try {
+                const source = document.querySelector('input[name="pffDataSource"]:checked').value;
+                const apiKey = document.getElementById('pffApiKey').value;
+
+                const response = await fetch('/api/pff/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        data_source: source,
+                        api_key: source === 'api' ? apiKey : null,
+                        cache_hours: 24
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'saved') {
+                    document.getElementById('pffSaveStatus').textContent = 'Configuration saved!';
+                    setTimeout(() => {
+                        document.getElementById('pffSaveStatus').textContent = '';
+                    }, 3000);
+                    await loadPffStatus();
+                    addLog('PFF configuration saved', 'success');
+                } else {
+                    addLog('Failed to save PFF config: ' + result.error, 'error');
+                }
+            } catch (error) {
+                addLog('Failed to save PFF config: ' + error, 'error');
+            }
+        }
+
+        async function testPffConnection() {
+            const apiKey = document.getElementById('pffApiKey').value;
+            const statusEl = document.getElementById('pffConnectionStatus');
+
+            if (!apiKey) {
+                statusEl.innerHTML = '<span style="color: #ff6b6b;">Please enter an API key</span>';
+                return;
+            }
+
+            statusEl.innerHTML = '<span style="color: #ffd43b;">Testing connection...</span>';
+
+            try {
+                const response = await fetch('/api/pff/test-connection', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'connected') {
+                    statusEl.innerHTML = '<span style="color: #51cf66;">Connected successfully!</span>';
+                } else if (result.status === 'not_implemented') {
+                    statusEl.innerHTML = '<span style="color: #ffd43b;">' + result.message + '</span>';
+                } else {
+                    statusEl.innerHTML = '<span style="color: #ff6b6b;">Connection failed: ' + (result.error || result.message) + '</span>';
+                }
+            } catch (error) {
+                statusEl.innerHTML = '<span style="color: #ff6b6b;">Connection test failed: ' + error + '</span>';
+            }
+        }
+
+        async function uploadPffCsv(metricType) {
+            const fileInput = metricType === 'line_play' ?
+                document.getElementById('pffLinePlayFile') :
+                document.getElementById('pffLuckFile');
+
+            if (!fileInput.files.length) {
+                addLog('Please select a file to upload', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                addLog(`Uploading ${metricType} CSV...`, 'info');
+
+                const response = await fetch(`/api/pff/upload/${metricType}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'uploaded') {
+                    addLog(`${metricType} CSV uploaded successfully`, 'success');
+                    fileInput.value = '';
+                    await loadPffStatus();
+                    await loadPffMetrics();
+                } else {
+                    addLog('Upload failed: ' + result.error, 'error');
+                }
+            } catch (error) {
+                addLog('Upload failed: ' + error, 'error');
+            }
+        }
+
+        async function loadPffMetrics() {
+            try {
+                const response = await fetch('/api/pff/metrics/all');
+                const result = await response.json();
+
+                if (result.error) {
+                    addLog('Failed to load PFF metrics: ' + result.error, 'error');
+                    return;
+                }
+
+                const tbody = document.querySelector('#pffMetricsTable tbody');
+                tbody.innerHTML = result.data.slice(0, 15).map(team => `
+                    <tr>
+                        <td><strong>${team.team}</strong></td>
+                        <td>${team.ol_pass_block_win_rate?.toFixed(1) || '-'}%</td>
+                        <td>${team.pressure_rate_allowed?.toFixed(1) || '-'}%</td>
+                        <td class="${team.line_play_score > 55 ? 'positive' : team.line_play_score < 45 ? 'negative' : ''}">${team.line_play_score?.toFixed(1) || '-'}</td>
+                        <td class="${team.int_luck_score < 0 ? 'positive' : team.int_luck_score > 0 ? 'negative' : ''}">${team.int_luck_score?.toFixed(1) || '-'}</td>
+                        <td>${team.qb_grade?.toFixed(1) || '-'}</td>
+                    </tr>
+                `).join('');
+
+                addLog('PFF metrics loaded', 'success');
+            } catch (error) {
+                addLog('Failed to load PFF metrics: ' + error, 'error');
+            }
+        }
+
+        // =====================
+        // PFF Screenshot Upload Functions
+        // =====================
+        let pffExtractedDataStore = null;
+        let pffAccumulatedFiles = [];  // Store accumulated files
+
+        function handleDragOver(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            const dropzone = document.getElementById('pffScreenshotDropzone');
+            dropzone.style.borderColor = '#00d4ff';
+            dropzone.style.background = '#1a2744';
+        }
+
+        function handleDragLeave(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            const dropzone = document.getElementById('pffScreenshotDropzone');
+            dropzone.style.borderColor = '#2a2a4e';
+            dropzone.style.background = '#16213e';
+        }
+
+        function handleScreenshotDrop(event) {
+            event.preventDefault();
+            event.stopPropagation();
+            handleDragLeave(event);
+
+            const files = event.dataTransfer.files;
+            if (files.length > 0) {
+                processScreenshots(files);
+            }
+        }
+
+        function handleScreenshotSelect(event) {
+            const files = event.target.files;
+            if (files.length > 0) {
+                processScreenshots(files);
+            }
+        }
+
+        function clearPffScreenshots() {
+            pffAccumulatedFiles = [];
+            document.getElementById('pffScreenshotList').innerHTML = '';
+            document.getElementById('pffScreenshotPreview').style.display = 'none';
+            document.getElementById('pffUploadProgress').style.display = 'none';
+            document.getElementById('pffExtractedData').style.display = 'none';
+            addLog('Screenshots cleared', 'info');
+        }
+
+        async function processScreenshots(files) {
+            const progressDiv = document.getElementById('pffUploadProgress');
+            const statusSpan = document.getElementById('pffUploadStatus');
+            const previewDiv = document.getElementById('pffScreenshotPreview');
+            const listDiv = document.getElementById('pffScreenshotList');
+
+            progressDiv.style.display = 'block';
+            statusSpan.style.color = '#ff9800';
+
+            // Add new files to accumulated list
+            for (let i = 0; i < files.length; i++) {
+                pffAccumulatedFiles.push(files[i]);
+            }
+
+            statusSpan.textContent = `Processing ${pffAccumulatedFiles.length} screenshot(s)...`;
+
+            // Show preview thumbnails (accumulate, don't clear)
+            previewDiv.style.display = 'block';
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                if (!file.type.startsWith('image/')) continue;
+
+                // Create thumbnail
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const thumb = document.createElement('div');
+                    thumb.style.cssText = 'position: relative; width: 100px; height: 75px; border-radius: 4px; overflow: hidden; border: 1px solid #2a2a4e;';
+                    thumb.innerHTML = `
+                        <img src="${e.target.result}" style="width: 100%; height: 100%; object-fit: cover;">
+                        <div style="position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: #fff; font-size: 9px; padding: 2px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                            ${file.name}
+                        </div>
+                    `;
+                    listDiv.appendChild(thumb);
+                };
+                reader.readAsDataURL(file);
+            }
+
+            // Upload screenshots
+            const formData = new FormData();
+            for (let i = 0; i < files.length; i++) {
+                formData.append('screenshots', files[i]);
+            }
+
+            try {
+                const response = await fetch('/api/pff/upload-screenshots', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    statusSpan.style.color = '#51cf66';
+                    statusSpan.textContent = `Processed ${result.files_processed} screenshot(s)`;
+
+                    // Show extracted data
+                    if (result.extracted_data) {
+                        pffExtractedDataStore = result.extracted_data;
+                        document.getElementById('pffExtractedData').style.display = 'block';
+                        document.getElementById('pffExtractedPreview').textContent = JSON.stringify(result.extracted_data, null, 2);
+                        addLog(`Extracted data from ${result.files_processed} PFF screenshots`, 'success');
+                    }
+                } else {
+                    statusSpan.style.color = '#ff4444';
+                    statusSpan.textContent = result.error || 'Failed to process screenshots';
+                    addLog('Failed to process screenshots: ' + result.error, 'error');
+                }
+            } catch (error) {
+                statusSpan.style.color = '#ff4444';
+                statusSpan.textContent = 'Upload failed: ' + error.message;
+                addLog('Screenshot upload failed: ' + error, 'error');
+            }
+        }
+
+        async function savePffExtractedData() {
+            if (!pffExtractedDataStore) {
+                addLog('No extracted data to save', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/pff/save-extracted', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: pffExtractedDataStore })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    addLog('PFF data saved to CSV: ' + result.path, 'success');
+                    await loadPffMetrics();
+                    await loadPffStatus();
+                } else {
+                    addLog('Failed to save data: ' + result.error, 'error');
+                }
+            } catch (error) {
+                addLog('Failed to save extracted data: ' + error, 'error');
+            }
+        }
+
+        // Next Gen Stats functions
+        async function loadNgsData() {
+            await Promise.all([
+                loadNgsStatus(),
+                loadNgsSeasonData(),
+                loadNgsTeamSeparation()
+            ]);
+        }
+
+        async function loadNgsStatus() {
+            try {
+                const response = await fetch('/api/ngs/status');
+                const result = await response.json();
+
+                const statusDiv = document.getElementById('ngsStatus');
+                if (result.error) {
+                    statusDiv.innerHTML = `<span style="color: #ff4444;">No NGS data available. Run scraper first.</span>`;
+                    return;
+                }
+
+                const checks = [];
+                if (result.has_season_data) checks.push(`<span style="color: #00ff88;">Season: ${result.season_count} rows</span>`);
+                if (result.has_weekly_data) checks.push(`<span style="color: #00ff88;">Weekly: ${result.weekly_count} rows</span>`);
+                if (result.has_team_ma) checks.push(`<span style="color: #00ff88;">Team MA: Ready</span>`);
+
+                statusDiv.innerHTML = checks.length > 0
+                    ? checks.join(' | ')
+                    : '<span style="color: #ff4444;">No data scraped yet</span>';
+
+                if (result.last_updated) {
+                    document.getElementById('ngsLastUpdated').textContent = `Last: ${result.last_updated}`;
+                }
+
+            } catch (error) {
+                document.getElementById('ngsStatus').innerHTML = `<span style="color: #ff4444;">Error loading status</span>`;
+            }
+        }
+
+        async function loadNgsSeasonData() {
+            try {
+                const response = await fetch('/api/ngs/season');
+                const result = await response.json();
+
+                if (result.error || !result.data) {
+                    return;
+                }
+
+                const tbody = document.querySelector('#ngsSeasonTable tbody');
+                // Column names: Unnamed: 0 (player name), TEAM, POS, SEP, TAR, etc.
+                tbody.innerHTML = result.data.slice(0, 15).map(player => `
+                    <tr>
+                        <td><strong>${player['Unnamed: 0'] || '-'}</strong></td>
+                        <td>${player['TEAM'] || '-'}</td>
+                        <td style="color: #00d4ff;">${player['SEP'] || '-'}</td>
+                        <td>${player['TAR'] || '-'}</td>
+                    </tr>
+                `).join('');
+
+                addLog('NGS season data loaded', 'success');
+            } catch (error) {
+                console.error('NGS season error:', error);
+            }
+        }
+
+        async function loadNgsTeamSeparation() {
+            try {
+                const response = await fetch('/api/ngs/team-separation');
+                const result = await response.json();
+
+                if (result.error || !result.data) {
+                    return;
+                }
+
+                const tbody = document.querySelector('#ngsTeamTable tbody');
+                tbody.innerHTML = result.data.map(team => `
+                    <tr>
+                        <td><strong>${team.team}</strong></td>
+                        <td style="color: ${parseFloat(team.separation_4wk_ma) > 2.5 ? '#00ff88' : parseFloat(team.separation_4wk_ma) < 2.0 ? '#ff4444' : '#fff'};">
+                            ${team.separation_4wk_ma || '-'}
+                        </td>
+                        <td>${team.games_in_window || '-'}</td>
+                    </tr>
+                `).join('');
+
+                addLog('NGS team separation loaded', 'success');
+            } catch (error) {
+                console.error('NGS team error:', error);
+            }
+        }
+
+        // Initialize on page load
+        async function init() {
+            await loadProfiles();
+            selectProfile('baseline');
+            loadResults();
+            loadAllProfiles();
+            loadMarketPrices();
+            loadAuditReport();
+            loadPffConfig();
+            loadNgsData();
+        }
+
+        init();
     </script>
 </body>
 </html>

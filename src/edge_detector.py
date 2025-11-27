@@ -24,9 +24,10 @@ class PolymarketFetcher:
 
     # Known Super Bowl market slugs (update for current season)
     SUPER_BOWL_SLUGS = [
+        "super-bowl-champion-2026-731",  # 2025-2026 season (Super Bowl LX)
+        "superbowl-champion-2025",       # 2024-2025 season (Super Bowl LIX) - already resolved
         "super-bowl-lix-winner",
         "nfl-super-bowl-winner",
-        "who-will-win-super-bowl"
     ]
 
     def __init__(self):
@@ -48,15 +49,19 @@ class PolymarketFetcher:
             print(f"Error searching markets: {e}")
             return []
 
-    def get_market_by_slug(self, slug: str) -> Optional[Dict]:
-        """Get market details by slug"""
+    def get_event_by_slug(self, slug: str) -> Optional[Dict]:
+        """Get event details by slug (events contain multiple markets)"""
         try:
-            url = f"{self.GAMMA_API}/markets/{slug}"
-            response = self.session.get(url, timeout=10)
+            url = f"{self.GAMMA_API}/events"
+            params = {'slug': slug}
+            response = self.session.get(url, params=params, timeout=15)
             response.raise_for_status()
-            return response.json()
+            events = response.json()
+            if events and len(events) > 0:
+                return events[0]
+            return None
         except Exception as e:
-            print(f"Error fetching market {slug}: {e}")
+            print(f"Error fetching event {slug}: {e}")
             return None
 
     def get_super_bowl_prices(self) -> pd.DataFrame:
@@ -66,35 +71,74 @@ class PolymarketFetcher:
         """
         print("Fetching Polymarket Super Bowl prices...")
 
-        # Try known slugs first
-        market_data = None
+        # Try known event slugs first
+        event_data = None
         for slug in self.SUPER_BOWL_SLUGS:
-            market_data = self.get_market_by_slug(slug)
-            if market_data:
-                print(f"  Found market: {slug}")
+            event_data = self.get_event_by_slug(slug)
+            if event_data and event_data.get('active', False):
+                print(f"  Found active event: {slug}")
+                print(f"  Volume: ${event_data.get('volume', 0):,.0f}")
                 break
 
-        # If no known slug works, search
-        if not market_data:
-            markets = self.search_markets("super bowl")
-            if markets:
-                # Find the NFL Super Bowl winner market
-                for m in markets:
-                    if 'super bowl' in m.get('question', '').lower():
-                        market_data = m
-                        print(f"  Found market via search: {m.get('slug')}")
-                        break
-
-        if not market_data:
-            print("  Could not find Super Bowl market")
+        if not event_data:
+            print("  Could not find active Super Bowl market")
             return self._get_fallback_prices()
 
-        # Parse market data into prices
-        prices = self._parse_market_prices(market_data)
+        # Parse event data into prices
+        prices = self._parse_event_prices(event_data)
         return prices
 
+    def _parse_event_prices(self, event_data: Dict) -> pd.DataFrame:
+        """Parse event data (with nested markets) into team prices"""
+        import json as json_module
+        prices = []
+
+        markets = event_data.get('markets', [])
+        print(f"  Parsing {len(markets)} team markets...")
+
+        for market in markets:
+            question = market.get('question', '')
+            # Parse team name from 'Will the X win Super Bowl 2026?'
+            if 'Will the' in question:
+                team_name = question.replace('Will the ', '').replace(' win Super Bowl 2026?', '').replace(' win Super Bowl 2025?', '')
+
+                # Get price - outcomePrices is a JSON string like '["0.05", "0.95"]'
+                outcome_prices = market.get('outcomePrices', '')
+                try:
+                    # It's a JSON array string
+                    price_list = json_module.loads(outcome_prices)
+                    if price_list:
+                        yes_price = float(price_list[0])
+
+                        # Normalize team name to abbreviation
+                        team_abbr = self._normalize_team_name(team_name)
+
+                        if team_abbr:
+                            prices.append({
+                                'team': team_abbr,
+                                'team_name': team_name,
+                                'market_price': yes_price,
+                                'implied_prob': yes_price,
+                                'implied_prob_pct': yes_price * 100
+                            })
+                except Exception as e:
+                    pass
+
+        if not prices:
+            print("  No prices parsed, using fallback")
+            return self._get_fallback_prices()
+
+        df = pd.DataFrame(prices)
+        df = df.sort_values('implied_prob', ascending=False).reset_index(drop=True)
+
+        # Save to file
+        df.to_csv(POLYMARKET_DIR / "super_bowl_prices.csv", index=False)
+        print(f"  Saved LIVE prices for {len(df)} teams")
+
+        return df
+
     def _parse_market_prices(self, market_data: Dict) -> pd.DataFrame:
-        """Parse market data into team prices"""
+        """Parse market data into team prices (legacy format)"""
         prices = []
 
         # Polymarket markets can have different structures
