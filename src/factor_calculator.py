@@ -6,16 +6,103 @@ Calculates all factors per team for the model:
 - Line Play (20%)
 - Situational (15%)
 - Luck Regression (10%)
+
+v2 Integration: Uses starter_detector_v2 for actual playing QB detection
+- Accounts for injuries: when QB1 is OUT/IR/PUP, uses backup QB's stats
+- Tracks which QB's stats were used for audit trail
+- Flags missing stats for backup QBs
 """
 
 import pandas as pd
 import numpy as np
 import requests
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
+from dataclasses import dataclass
 
 RAW_DIR = Path(__file__).parent.parent / "data" / "raw"
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
+DATA_DIR = Path(__file__).parent.parent / "data"
+
+# ESPN 2025 stats file (from espn_qb_stats_2025.py)
+ESPN_QB_STATS_FILE = DATA_DIR / "qb_stats_2025.json"
+# FTN EPA data file (manual CSV from screenshots)
+FTN_EPA_FILE = DATA_DIR / "ftn_epa_2025.csv"
+
+# Import starter detector v2 for actual playing QB detection
+try:
+    from starter_detector_v2 import StarterDetectorV2, get_playing_qbs_dict, get_starter_info
+    STARTER_V2_AVAILABLE = True
+except ImportError:
+    try:
+        from src.starter_detector_v2 import StarterDetectorV2, get_playing_qbs_dict, get_starter_info
+        STARTER_V2_AVAILABLE = True
+    except ImportError:
+        STARTER_V2_AVAILABLE = False
+        print("Warning: starter_detector_v2 not available, using basic roster detection")
+
+
+@dataclass
+class QBStatsInfo:
+    """Information about QB stats availability and quality."""
+    qb_name: str
+    team: str
+    stats_available: bool
+    games_sample: int
+    data_quality: str  # 'high', 'medium', 'low'
+    warning: Optional[str] = None
+    is_backup: bool = False
+    stats_source: str = "nfl_data_py"
+
+
+# ============================================================================
+# BAYESIAN SHRINKAGE FOR SAMPLE SIZE ADJUSTMENT
+# ============================================================================
+
+def apply_bayesian_shrinkage(raw_score: float, games: int, prior: float = 50.0, prior_weight: float = 8.0) -> float:
+    """
+    Apply Bayesian shrinkage to regress scores toward prior based on sample size.
+
+    Formula: Adjusted = (Raw × Games + Prior × Prior_Weight) / (Games + Prior_Weight)
+
+    This is essentially treating games as "observations" and prior_weight as
+    "pseudo-observations" from the prior. With 8 prior weight:
+    - 2 games: 20% weight on data, 80% on prior
+    - 5 games: 38% weight on data, 62% on prior
+    - 8 games: 50% weight on data, 50% on prior
+    - 16 games: 67% weight on data, 33% on prior
+
+    Args:
+        raw_score: The calculated score (0-100)
+        games: Number of games in sample
+        prior: Prior expectation (default 50 = league average)
+        prior_weight: How much to weight the prior (default 8 = need 8 games to trust data fully)
+
+    Returns:
+        Adjusted score with shrinkage applied
+    """
+    if games <= 0:
+        return prior  # No data, return prior
+
+    adjusted = (raw_score * games + prior * prior_weight) / (games + prior_weight)
+    return adjusted
+
+
+def get_qb_prior(is_backup: bool, is_rookie: bool) -> float:
+    """
+    Get appropriate prior based on QB type.
+
+    - Veteran starter: 50 (league average)
+    - Backup QB: 40 (below average expectation)
+    - Rookie: 45 (slight discount for inexperience)
+    """
+    if is_backup:
+        return 40.0
+    elif is_rookie:
+        return 45.0
+    else:
+        return 50.0
 
 
 class CurrentRosterFetcher:
@@ -143,7 +230,7 @@ class CurrentRosterFetcher:
 class FactorCalculator:
     """Calculate all factors for NFL teams"""
 
-    def __init__(self, current_season: int = 2024, current_week: int = None):
+    def __init__(self, current_season: int = 2025, current_week: int = None):
         self.current_season = current_season
         self.current_week = current_week
         self.pbp = None
@@ -155,6 +242,15 @@ class FactorCalculator:
         self.roster_fetcher = CurrentRosterFetcher()
         self.current_qbs = None  # Will be populated with current starting QBs
         self.current_starters = None  # All key starters by position
+
+        # v2: Actual playing QBs from injury-aware starter detector
+        self.actual_playing_qbs: Dict[str, str] = {}  # team -> actual QB
+        self.qb_stats_info: Dict[str, QBStatsInfo] = {}  # team -> stats info
+        self.starter_detector = None  # StarterDetectorV2 instance
+
+        # v3: ESPN 2025 stats and FTN EPA data
+        self.espn_qb_stats_2025: Dict[str, Dict] = {}  # team -> ESPN stats dict
+        self.ftn_epa_data: Dict[str, Dict] = {}  # team -> FTN EPA data
 
     def load_data(self):
         """Load all required data files"""
@@ -221,6 +317,35 @@ class FactorCalculator:
                     self.schedules['season'] == self.current_season
                 ]['week'].max()
             print(f"  Current week detected: {self.current_week}")
+
+        # Load ESPN 2025 QB stats (for current season/recent stats)
+        if ESPN_QB_STATS_FILE.exists():
+            with open(ESPN_QB_STATS_FILE, 'r') as f:
+                data = json.load(f)
+                self.espn_qb_stats_2025 = data.get('stats', {})
+            print(f"  Loaded ESPN 2025 QB stats for {len(self.espn_qb_stats_2025)} teams")
+
+        # Load FTN EPA data (if available)
+        # Takes the QB with the most games for each team (the primary starter)
+        if FTN_EPA_FILE.exists():
+            ftn_df = pd.read_csv(FTN_EPA_FILE)
+            # Group by team and take QB with most games
+            ftn_by_team = {}
+            for _, row in ftn_df.iterrows():
+                team = row.get('team', '')
+                games = row.get('games', 0) or 0
+                if team:
+                    if team not in ftn_by_team or games > ftn_by_team[team].get('games', 0):
+                        ftn_by_team[team] = {
+                            'player': row.get('player', ''),
+                            'epa': row.get('epa', 0),
+                            'epa_db': row.get('epa_db', 0),
+                            'games': games,
+                            'dyar': row.get('dyar', 0),
+                            'dvoa': row.get('dvoa', 0)
+                        }
+            self.ftn_epa_data = ftn_by_team
+            print(f"  Loaded FTN EPA data for {len(self.ftn_epa_data)} teams")
 
     def get_teams(self) -> List[str]:
         """Get list of all NFL teams"""
@@ -300,6 +425,165 @@ class FactorCalculator:
 
         # Return most recent 5 games
         return player_data.sort_values(['season', 'week'], ascending=False).head(5)
+
+    def get_espn_2025_qb_stats(self, team: str) -> Optional[Dict]:
+        """
+        Get ESPN 2025 QB stats for a team.
+        Returns dict with: name, passing_yards, passing_tds, interceptions,
+                          completions, attempts, passer_rating, games
+        """
+        return self.espn_qb_stats_2025.get(team)
+
+    def get_ftn_epa(self, team: str) -> Optional[Dict]:
+        """
+        Get FTN EPA data for a team.
+        Returns dict with: player, epa, epa_db, games, dyar, dvoa
+        """
+        return self.ftn_epa_data.get(team)
+
+    def get_qb_efficiency_from_2025_data(self, team: str) -> Optional[Dict]:
+        """
+        Get QB efficiency metrics from 2025 data sources.
+
+        Priority: FTN EPA (best quality) > ESPN 2025 (fallback)
+
+        Returns dict with normalized metrics:
+            - epa_dropback: EPA per dropback
+            - passer_rating: ESPN passer rating (normalized 0-100)
+            - games: sample size
+            - source: data source used
+        """
+        result = {}
+
+        # Check FTN EPA first (highest quality - has true EPA)
+        ftn_data = self.get_ftn_epa(team)
+        if ftn_data and ftn_data.get('epa_db', 0) != 0:
+            result['epa_dropback'] = ftn_data['epa_db']
+            result['ftn_epa_total'] = ftn_data['epa']
+            result['ftn_dvoa'] = ftn_data['dvoa']
+            result['games'] = ftn_data['games']
+            result['source'] = 'FTN'
+
+        # ESPN 2025 stats (fallback or supplement)
+        espn_data = self.get_espn_2025_qb_stats(team)
+        if espn_data:
+            result['espn_passer_rating'] = espn_data.get('passer_rating', 0)
+            result['espn_yards'] = espn_data.get('passing_yards', 0)
+            result['espn_tds'] = espn_data.get('passing_tds', 0)
+            result['espn_ints'] = espn_data.get('interceptions', 0)
+            result['espn_games'] = espn_data.get('games', 0)
+
+            # If no FTN data, use ESPN as primary
+            if 'source' not in result:
+                # Approximate EPA/dropback from passer rating (rough conversion)
+                rating = espn_data.get('passer_rating', 90)
+                # Rating 100 ≈ +0.15 EPA/db, Rating 75 ≈ -0.05 EPA/db
+                approx_epa_db = (rating - 90) / 100 * 0.2
+                result['epa_dropback'] = approx_epa_db
+                result['games'] = espn_data.get('games', 0)
+                result['source'] = 'ESPN_2025'
+
+        return result if result else None
+
+    def _load_actual_playing_qbs(self) -> Dict[str, str]:
+        """
+        Load actual playing QBs using starter_detector_v2.
+
+        This accounts for injuries - when QB1 is OUT/IR/PUP, returns backup.
+        Falls back to basic roster fetcher if v2 is not available.
+        """
+        if STARTER_V2_AVAILABLE:
+            print("  Loading actual playing QBs from starter_detector_v2 (injury-aware)...")
+            self.starter_detector = StarterDetectorV2()
+            self.actual_playing_qbs = self.starter_detector.get_actual_playing_qbs()
+
+            # Count backups starting
+            all_starters = self.starter_detector.get_all_starters()
+            backup_count = sum(1 for info in all_starters.values() if info.auto_backup)
+            print(f"  Found {len(self.actual_playing_qbs)} playing QBs ({backup_count} backup(s) starting)")
+        else:
+            print("  Warning: starter_detector_v2 not available, using basic roster API")
+            if self.current_qbs is None:
+                self.current_qbs = self.roster_fetcher.get_all_current_qbs()
+            self.actual_playing_qbs = self.current_qbs
+
+        return self.actual_playing_qbs
+
+    def check_qb_stats_availability(self, qb_name: str, team: str, is_backup: bool = False) -> QBStatsInfo:
+        """
+        Check if we have stats for a QB and assess data quality.
+
+        Args:
+            qb_name: Name of the QB to check
+            team: Team abbreviation
+            is_backup: Whether this QB is a backup starting due to injury
+
+        Returns:
+            QBStatsInfo with availability, sample size, and warnings
+        """
+        if self.qb_stats is None:
+            return QBStatsInfo(
+                qb_name=qb_name,
+                team=team,
+                stats_available=False,
+                games_sample=0,
+                data_quality='low',
+                warning=f"QB stats data not loaded",
+                is_backup=is_backup,
+                stats_source="none"
+            )
+
+        # Try to find QB in stats (first initial + last name format)
+        parts = qb_name.split()
+        if len(parts) >= 2:
+            first_initial = parts[0][0].upper()
+            last_name = parts[-1]
+            exact_pattern = f"{first_initial}.{last_name}".lower()
+        else:
+            exact_pattern = qb_name.lower()
+
+        # Search ALL teams for this QB (veteran QBs have stats from multiple teams)
+        # This gives us the full career sample size for data quality assessment
+        matching = self.qb_stats[self.qb_stats['qb_name'].str.lower() == exact_pattern]
+
+        games_sample = len(matching)
+
+        if games_sample == 0:
+            warning = f"No NFL stats found for {qb_name}"
+            if is_backup:
+                warning += " - using league average baseline"
+            return QBStatsInfo(
+                qb_name=qb_name,
+                team=team,
+                stats_available=False,
+                games_sample=0,
+                data_quality='low',
+                warning=warning,
+                is_backup=is_backup,
+                stats_source="none"
+            )
+        elif games_sample < 3:
+            return QBStatsInfo(
+                qb_name=qb_name,
+                team=team,
+                stats_available=True,
+                games_sample=games_sample,
+                data_quality='medium',
+                warning=f"Small sample size: {games_sample} games",
+                is_backup=is_backup,
+                stats_source="nfl_data_py"
+            )
+        else:
+            return QBStatsInfo(
+                qb_name=qb_name,
+                team=team,
+                stats_available=True,
+                games_sample=games_sample,
+                data_quality='high',
+                warning=None,
+                is_backup=is_backup,
+                stats_source="nfl_data_py"
+            )
 
     def calculate_receiver_quality(self, team: str) -> Dict[str, Any]:
         """Calculate receiving corps quality based on current WR/TE starters.
@@ -436,11 +720,16 @@ class FactorCalculator:
         - Pressure-to-sack rate
         - Playoff wins (historical bonus)
 
-        Uses CURRENT starting QB from ESPN roster API, not historical leader.
+        v2: Uses ACTUAL playing QB (injury-aware) via starter_detector_v2.
+        When QB1 is injured, uses backup QB's stats.
         """
         print("\nCalculating QB Quality factors...")
 
-        # Fetch current starting QBs from ESPN roster
+        # v2: Load actual playing QBs (injury-aware)
+        if not self.actual_playing_qbs:
+            self._load_actual_playing_qbs()
+
+        # Fallback to basic roster if v2 didn't load
         if self.current_qbs is None:
             self.current_qbs = self.roster_fetcher.get_all_current_qbs()
 
@@ -477,8 +766,16 @@ class FactorCalculator:
             if len(team_qbs) == 0:
                 continue
 
-            # First check for current starting QB from roster API
-            current_qb = self.current_qbs.get(team)
+            # v2: Use ACTUAL playing QB (accounts for injuries)
+            actual_qb = self.actual_playing_qbs.get(team)
+            current_qb = actual_qb or self.current_qbs.get(team)
+
+            # Check if this is a backup QB starting
+            is_backup = False
+            if STARTER_V2_AVAILABLE and self.starter_detector:
+                starter_info = self.starter_detector.get_team_starter(team)
+                is_backup = starter_info.auto_backup
+
             qb_data = None
 
             if current_qb:
@@ -500,7 +797,8 @@ class FactorCalculator:
                 if len(matching_qbs) > 0:
                     primary_qb = matching_qbs.groupby('qb_name')['dropbacks'].sum().idxmax()
                     qb_data = matching_qbs[matching_qbs['qb_name'] == primary_qb]
-                    print(f"  {team}: Using current starter {current_qb} -> {primary_qb} (team stats)")
+                    backup_tag = " [BACKUP]" if is_backup else ""
+                    print(f"  {team}: Using {current_qb} -> {primary_qb} (team stats){backup_tag}")
                 else:
                     # Search in ALL teams with exact match - QB may have played elsewhere
                     all_matching = self.qb_stats[self.qb_stats['qb_name'].str.lower() == exact_pattern]
@@ -509,7 +807,8 @@ class FactorCalculator:
                         primary_qb = all_matching.groupby('qb_name')['dropbacks'].sum().idxmax()
                         qb_data = all_matching[all_matching['qb_name'] == primary_qb]
                         prev_teams = all_matching['team'].unique()
-                        print(f"  {team}: Using current starter {current_qb} -> {primary_qb} (from {', '.join(prev_teams)})")
+                        backup_tag = " [BACKUP]" if is_backup else ""
+                        print(f"  {team}: Using {current_qb} -> {primary_qb} (from {', '.join(prev_teams)}){backup_tag}")
                     else:
                         # Current starter has no NFL stats (likely a rookie)
                         # Use the current starter's name and assign a baseline rookie score
@@ -519,15 +818,79 @@ class FactorCalculator:
                         else:
                             primary_qb = current_qb
                         qb_data = None  # Mark as no stats - will use baseline
-                        print(f"  {team}: Current starter {current_qb} -> {primary_qb} (ROOKIE - no NFL stats)")
+                        backup_tag = " [BACKUP]" if is_backup else ""
+                        warning_tag = " - USING BASELINE" if is_backup else ""
+                        print(f"  {team}: {current_qb} -> {primary_qb} (NO NFL STATS){backup_tag}{warning_tag}")
             else:
                 # Fallback to historical leader if roster API failed
                 primary_qb = team_qbs.groupby('qb_name')['dropbacks'].sum().idxmax()
                 qb_data = team_qbs[team_qbs['qb_name'] == primary_qb]
 
-            # Handle rookie QBs with no NFL stats
+            # Handle rookie QBs with no NFL stats - try 2025 data sources
             if qb_data is None or len(qb_data) == 0:
-                # Rookie/unknown QB - assign baseline score (below average)
+                # v3: Try ESPN 2025 / FTN EPA data for rookies
+                data_2025 = self.get_qb_efficiency_from_2025_data(team)
+
+                if data_2025 and data_2025.get('games', 0) >= 2:
+                    # Use 2025 data for rookie QBs
+                    epa_dropback = data_2025.get('epa_dropback', 0)
+                    espn_rating = data_2025.get('espn_passer_rating', 90)
+                    source = data_2025.get('source', 'ESPN_2025')
+
+                    # Normalize EPA/dropback to score
+                    epa_score = (epa_dropback + 0.3) / 0.6 * 100
+                    epa_score = np.clip(epa_score, 0, 100)
+
+                    # Use passer rating as CPOE proxy (normalized)
+                    cpoe_score = (espn_rating - 70) / 60 * 100  # 70-130 range
+                    cpoe_score = np.clip(cpoe_score, 0, 100)
+
+                    # Composite score (raw)
+                    raw_qb_quality = (epa_score * 0.60) + (cpoe_score * 0.40)
+
+                    # v5: Apply Bayesian shrinkage for 2025 data
+                    games_2025 = data_2025.get('games', 0)
+                    is_rookie_2025 = games_2025 < 20  # Less than ~1.5 seasons
+                    prior_2025 = get_qb_prior(is_backup, is_rookie_2025)
+                    qb_quality = apply_bayesian_shrinkage(raw_qb_quality, games_2025, prior=prior_2025, prior_weight=8.0)
+                    shrinkage_pct_2025 = ((raw_qb_quality - qb_quality) / raw_qb_quality * 100) if raw_qb_quality > 0 else 0
+
+                    backup_tag = " [BACKUP]" if is_backup else ""
+                    print(f"  {team}: {primary_qb} -> Using {source} data (2025, {games_2025}g, shrink={shrinkage_pct_2025:.1f}%){backup_tag}")
+
+                    stats_info = QBStatsInfo(
+                        qb_name=primary_qb, team=team, stats_available=True,
+                        games_sample=data_2025.get('games', 0),
+                        data_quality='medium', is_backup=is_backup,
+                        stats_source=source
+                    )
+                    self.qb_stats_info[team] = stats_info
+
+                    qb_factors.append({
+                        'team': team,
+                        'primary_qb': primary_qb,
+                        'epa_dropback': epa_dropback,
+                        'cpoe': 0,  # Not available from 2025 data
+                        'sack_rate': 0.05,
+                        'epa_score': epa_score,
+                        'cpoe_score': cpoe_score,
+                        'sack_score': 50,
+                        'qb_quality_score': qb_quality,
+                        'is_backup_qb': is_backup,
+                        'stats_available': True,
+                        'stats_games': data_2025.get('games', 0),
+                        'stats_quality': 'medium',
+                        'stats_warning': f"Using {source} 2025 data",
+                        'data_source': source,
+                        'ftn_epa_total': data_2025.get('ftn_epa_total'),
+                        'espn_passer_rating': espn_rating
+                    })
+                    continue
+
+                # No 2025 data - use baseline
+                stats_info = self.check_qb_stats_availability(current_qb or primary_qb, team, is_backup)
+                self.qb_stats_info[team] = stats_info
+
                 qb_factors.append({
                     'team': team,
                     'primary_qb': primary_qb,
@@ -537,7 +900,13 @@ class FactorCalculator:
                     'epa_score': 30,    # Below average
                     'cpoe_score': 30,   # Below average
                     'sack_score': 50,   # Average
-                    'qb_quality_score': 35  # Below average (unknown)
+                    'qb_quality_score': 35,  # Below average (unknown)
+                    # v2: Stats availability tracking
+                    'is_backup_qb': is_backup,
+                    'stats_available': False,
+                    'stats_games': 0,
+                    'stats_quality': 'low',
+                    'stats_warning': stats_info.warning
                 })
                 continue
 
@@ -567,8 +936,22 @@ class FactorCalculator:
             sack_score = (0.10 - sack_rate) / 0.07 * 100
             sack_score = np.clip(sack_score, 0, 100)
 
-            # Composite QB Quality score
-            qb_quality = (epa_score * 0.50) + (cpoe_score * 0.30) + (sack_score * 0.20)
+            # Composite QB Quality score (raw)
+            raw_qb_quality = (epa_score * 0.50) + (cpoe_score * 0.30) + (sack_score * 0.20)
+
+            # Check stats availability and store info
+            games_sample = len(recent)
+            stats_info = self.check_qb_stats_availability(current_qb or primary_qb, team, is_backup)
+
+            # v5: Apply Bayesian shrinkage based on sample size
+            # Determine if this is a rookie (less than ~1.5 seasons of data)
+            is_rookie = games_sample < 20
+            prior = get_qb_prior(is_backup, is_rookie)
+            qb_quality = apply_bayesian_shrinkage(raw_qb_quality, games_sample, prior=prior, prior_weight=8.0)
+
+            # Calculate shrinkage for audit trail
+            shrinkage_pct = ((raw_qb_quality - qb_quality) / raw_qb_quality * 100) if raw_qb_quality > 0 else 0
+            self.qb_stats_info[team] = stats_info
 
             qb_factors.append({
                 'team': team,
@@ -579,7 +962,17 @@ class FactorCalculator:
                 'epa_score': epa_score,
                 'cpoe_score': cpoe_score,
                 'sack_score': sack_score,
-                'qb_quality_score': qb_quality
+                'qb_quality_score': qb_quality,
+                # v5: Bayesian shrinkage tracking
+                'raw_qb_quality': raw_qb_quality,
+                'shrinkage_pct': shrinkage_pct,
+                'prior_used': prior,
+                # v2: Stats availability tracking
+                'is_backup_qb': is_backup,
+                'stats_available': True,
+                'stats_games': games_sample,
+                'stats_quality': stats_info.data_quality,
+                'stats_warning': stats_info.warning
             })
 
         return pd.DataFrame(qb_factors)
@@ -818,8 +1211,8 @@ class FactorCalculator:
             third_score = (third_down_success - 0.30) / 0.20 * 100
             third_score = np.clip(third_score, 0, 100)
 
-            # RZ TD rate: 40-70%
-            rz_score = (rz_td_rate - 0.40) / 0.30 * 100
+            # RZ TD rate: 10-35% (actual NFL rates are ~13-31%)
+            rz_score = (rz_td_rate - 0.10) / 0.25 * 100
             rz_score = np.clip(rz_score, 0, 100)
 
             # Q4 EPA: -0.1 to +0.1

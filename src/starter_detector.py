@@ -1,625 +1,741 @@
 """
-NFL Starter Detection & Injury Integration Module
-==================================================
-Ensures model uses stats from CURRENT healthy starters, not historical averages.
+NFL Starter Detector
 
-Data Sources:
-- ESPN Depth Chart API: Declared starters
-- ESPN Injuries API: Injury status (OUT, DOUBTFUL, QUESTIONABLE)
-- nfl_data_py: Play-by-play verification of actual starters
+Detects current starting QBs for each team using:
+1. ESPN depth chart API
+2. ESPN injury reports
+3. Play-by-play snap count validation
 
-Usage:
-    detector = StarterDetector()
-    starters = detector.get_all_starters()
-    # Returns dict with current QB for each team + confidence level
+Cross-validates multiple sources for confidence scoring.
 """
 
+import logging
 import requests
-import pandas as pd
-import nfl_data_py as nfl
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from pathlib import Path
-import json
-import time
+from enum import Enum
+
+try:
+    import nfl_data_py as nfl
+    NFL_DATA_AVAILABLE = True
+except ImportError:
+    NFL_DATA_AVAILABLE = False
+
+try:
+    from team_config import NFL_TEAMS, ESPN_TEAM_IDS, normalize_team_name
+except ImportError:
+    from src.team_config import NFL_TEAMS, ESPN_TEAM_IDS, normalize_team_name
+
+logger = logging.getLogger(__name__)
 
 
-OUTPUTS_DIR = Path(__file__).parent.parent / "outputs"
-OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+# =============================================================================
+# DATA CLASSES AND ENUMS
+# =============================================================================
 
+class ConfidenceLevel(Enum):
+    """Confidence level for starter detection."""
+    HIGH = "HIGH"       # Multiple sources agree, no injury concerns
+    MEDIUM = "MEDIUM"   # Sources agree but injury concerns OR single source
+    LOW = "LOW"         # Sources disagree or limited data
+
+
+class InjuryStatus(Enum):
+    """NFL injury designations."""
+    HEALTHY = "Healthy"
+    QUESTIONABLE = "Questionable"
+    DOUBTFUL = "Doubtful"
+    OUT = "Out"
+    IR = "IR"
+    PUP = "PUP"
+    UNKNOWN = "Unknown"
+
+
+@dataclass
+class StarterInfo:
+    """Information about a team's starting QB."""
+    team: str                           # Canonical team abbreviation
+    player_name: str                    # QB's full name
+    player_id: Optional[str] = None     # ESPN player ID if available
+    injury_status: InjuryStatus = InjuryStatus.HEALTHY
+    injury_detail: Optional[str] = None # e.g., "Ankle"
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    depth_chart_rank: int = 1           # 1 = starter, 2 = backup, etc.
+    recent_snap_pct: Optional[float] = None  # From PBP data
+    last_game_snaps: Optional[int] = None
+    sources: List[str] = field(default_factory=list)  # Which sources confirmed
+    last_updated: datetime = field(default_factory=datetime.now)
+    notes: Optional[str] = None         # Any additional context
+
+
+# =============================================================================
+# ESPN API FETCHER
+# =============================================================================
+
+class ESPNFetcher:
+    """Fetches data from ESPN APIs."""
+
+    BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl"
+
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (compatible; NFLPolymarketModel/1.0)"
+        })
+
+    def get_depth_chart(self, team: str) -> Optional[Dict]:
+        """
+        Fetch depth chart for a team.
+
+        Args:
+            team: Canonical team abbreviation (e.g., "KC")
+
+        Returns:
+            Dict with depth chart data or None on error
+        """
+        team = normalize_team_name(team)
+        if team is None or team not in ESPN_TEAM_IDS:
+            logger.error(f"Unknown team: {team}")
+            return None
+
+        team_id = ESPN_TEAM_IDS[team]
+        url = f"{self.BASE_URL}/teams/{team_id}/depthcharts"
+
+        try:
+            logger.debug(f"Fetching depth chart for {team} (ESPN ID: {team_id})")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch depth chart for {team}: {e}")
+            return None
+
+    def get_injuries(self, team: str) -> Optional[List[Dict]]:
+        """
+        Fetch injury report for a team.
+
+        Args:
+            team: Canonical team abbreviation
+
+        Returns:
+            List of injury records or None on error
+        """
+        team = normalize_team_name(team)
+        if team is None or team not in ESPN_TEAM_IDS:
+            logger.error(f"Unknown team: {team}")
+            return None
+
+        team_id = ESPN_TEAM_IDS[team]
+        url = f"{self.BASE_URL}/teams/{team_id}/injuries"
+
+        try:
+            logger.debug(f"Fetching injuries for {team}")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract injury list from response
+            injuries = []
+            if "team" in data and "injuries" in data["team"]:
+                injuries = data["team"]["injuries"]
+            elif "injuries" in data:
+                injuries = data["injuries"]
+
+            return injuries
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch injuries for {team}: {e}")
+            return None
+
+    def get_roster(self, team: str) -> Optional[List[Dict]]:
+        """
+        Fetch team roster.
+
+        Args:
+            team: Canonical team abbreviation
+
+        Returns:
+            List of player records or None on error
+        """
+        team = normalize_team_name(team)
+        if team is None or team not in ESPN_TEAM_IDS:
+            logger.error(f"Unknown team: {team}")
+            return None
+
+        team_id = ESPN_TEAM_IDS[team]
+        url = f"{self.BASE_URL}/teams/{team_id}/roster"
+
+        try:
+            logger.debug(f"Fetching roster for {team}")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            # Extract athletes from roster groups
+            athletes = []
+            if "athletes" in data:
+                for group in data["athletes"]:
+                    if "items" in group:
+                        athletes.extend(group["items"])
+
+            return athletes
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch roster for {team}: {e}")
+            return None
+
+    def parse_qb_from_depth_chart(self, depth_data: Dict) -> List[Dict]:
+        """
+        Extract QB information from depth chart data.
+
+        ESPN depth chart structure:
+        - depthchart: array of formations (offense, defense, special teams)
+        - Each formation has positions dict keyed by position abbreviation ("qb", "rb", etc.)
+        - Each position has athletes array in depth chart order (first = starter)
+
+        Returns list of QBs with their depth chart position.
+        """
+        qbs = []
+
+        if not depth_data:
+            return qbs
+
+        try:
+            # Navigate ESPN's depth chart structure - key is 'depthchart' not 'items'
+            formations = depth_data.get("depthchart", [])
+
+            for formation in formations:
+                positions = formation.get("positions", {})
+
+                # Look for QB position (lowercase 'qb')
+                if "qb" not in positions:
+                    continue
+
+                qb_data = positions["qb"]
+                athletes = qb_data.get("athletes", [])
+
+                for rank, athlete in enumerate(athletes, start=1):
+                    qb_info = {
+                        "name": athlete.get("displayName", athlete.get("fullName", "Unknown")),
+                        "id": str(athlete.get("id", "")),
+                        "rank": rank,
+                    }
+                    qbs.append(qb_info)
+
+                if qbs:
+                    break  # Found QBs, no need to check other formations
+
+        except (KeyError, TypeError) as e:
+            logger.warning(f"Error parsing depth chart: {e}")
+
+        return qbs
+
+    def parse_qb_injuries(self, injuries: List[Dict]) -> Dict[str, Dict]:
+        """
+        Extract QB injuries from injury report.
+
+        Returns dict mapping player name to injury info.
+        """
+        qb_injuries = {}
+
+        if not injuries:
+            return qb_injuries
+
+        for injury in injuries:
+            try:
+                athlete = injury.get("athlete", {})
+                position = athlete.get("position", {})
+                pos_abbr = position.get("abbreviation", "")
+
+                if pos_abbr.upper() == "QB":
+                    name = athlete.get("displayName", athlete.get("fullName", "Unknown"))
+                    status_text = injury.get("status", "Unknown")
+
+                    # Map status to enum
+                    status_map = {
+                        "questionable": InjuryStatus.QUESTIONABLE,
+                        "doubtful": InjuryStatus.DOUBTFUL,
+                        "out": InjuryStatus.OUT,
+                        "injured reserve": InjuryStatus.IR,
+                        "ir": InjuryStatus.IR,
+                        "pup": InjuryStatus.PUP,
+                    }
+                    status = status_map.get(status_text.lower(), InjuryStatus.UNKNOWN)
+
+                    qb_injuries[name] = {
+                        "status": status,
+                        "detail": injury.get("type", {}).get("description", None),
+                        "id": str(athlete.get("id", "")),
+                    }
+
+            except (KeyError, TypeError) as e:
+                logger.warning(f"Error parsing injury: {e}")
+                continue
+
+        return qb_injuries
+
+
+# =============================================================================
+# PLAY-BY-PLAY FETCHER
+# =============================================================================
+
+class PBPFetcher:
+    """Fetches and analyzes play-by-play data for snap counts."""
+
+    def __init__(self):
+        if not NFL_DATA_AVAILABLE:
+            logger.warning("nfl_data_py not available - PBP validation disabled")
+
+    def get_recent_qb_snaps(self, team: str, weeks: int = 3) -> Optional[Dict]:
+        """
+        Get QB snap counts from recent games.
+
+        Args:
+            team: Canonical team abbreviation
+            weeks: Number of recent weeks to analyze
+
+        Returns:
+            Dict with QB snap data or None
+        """
+        if not NFL_DATA_AVAILABLE:
+            return None
+
+        team = normalize_team_name(team)
+        if team is None:
+            return None
+
+        try:
+            # Get current season
+            current_year = datetime.now().year
+            # If before September, use previous year
+            if datetime.now().month < 9:
+                current_year -= 1
+
+            logger.debug(f"Fetching PBP data for {team}, season {current_year}")
+
+            # Load play-by-play data
+            pbp = nfl.import_pbp_data([current_year])
+
+            if pbp is None or len(pbp) == 0:
+                logger.warning(f"No PBP data available for {current_year}")
+                return None
+
+            # Filter to team's offensive plays
+            team_plays = pbp[
+                (pbp["posteam"] == team) &
+                (pbp["play_type"].isin(["pass", "run"]))
+            ]
+
+            if len(team_plays) == 0:
+                logger.warning(f"No plays found for {team}")
+                return None
+
+            # Get recent weeks
+            max_week = team_plays["week"].max()
+            min_week = max(1, max_week - weeks + 1)
+            recent_plays = team_plays[team_plays["week"] >= min_week]
+
+            # Count snaps by passer (for pass plays)
+            qb_snaps = {}
+            pass_plays = recent_plays[recent_plays["play_type"] == "pass"]
+
+            if "passer_player_name" in pass_plays.columns:
+                snap_counts = pass_plays.groupby("passer_player_name").size()
+                total_pass_plays = len(pass_plays)
+
+                for qb_name, snaps in snap_counts.items():
+                    if qb_name and snaps > 0:
+                        qb_snaps[qb_name] = {
+                            "snaps": int(snaps),
+                            "snap_pct": snaps / total_pass_plays if total_pass_plays > 0 else 0,
+                            "weeks_analyzed": int(max_week - min_week + 1),
+                        }
+
+            return qb_snaps if qb_snaps else None
+
+        except Exception as e:
+            logger.error(f"Error fetching PBP data for {team}: {e}")
+            return None
+
+
+# =============================================================================
+# STARTER DETECTOR
+# =============================================================================
 
 class StarterDetector:
-    """Detects current NFL starters accounting for injuries and depth chart changes."""
+    """
+    Detects starting QBs by cross-referencing multiple sources.
 
-    # ESPN Team ID mapping
-    ESPN_TEAM_IDS = {
-        'ARI': 22, 'ATL': 1, 'BAL': 33, 'BUF': 2, 'CAR': 29, 'CHI': 3,
-        'CIN': 4, 'CLE': 5, 'DAL': 6, 'DEN': 7, 'DET': 8, 'GB': 9,
-        'HOU': 34, 'IND': 11, 'JAX': 30, 'KC': 12, 'LV': 13, 'LAC': 24,
-        'LAR': 14, 'MIA': 15, 'MIN': 16, 'NE': 17, 'NO': 18, 'NYG': 19,
-        'NYJ': 20, 'PHI': 21, 'PIT': 23, 'SF': 25, 'SEA': 26, 'TB': 27,
-        'TEN': 10, 'WAS': 28
-    }
+    Priority:
+    1. ESPN depth chart (primary source)
+    2. ESPN injury report (modifies confidence)
+    3. PBP snap counts (validation)
+    """
 
-    # Reverse mapping
-    ESPN_ID_TO_TEAM = {v: k for k, v in ESPN_TEAM_IDS.items()}
-
-    def __init__(self, cache_duration_hours: int = 4):
+    def __init__(self, use_pbp_validation: bool = True):
         """
         Initialize detector.
 
         Args:
-            cache_duration_hours: How long to cache API responses
+            use_pbp_validation: Whether to validate with PBP data
         """
-        self.cache_duration = timedelta(hours=cache_duration_hours)
-        self._depth_chart_cache = {}
-        self._injury_cache = {}
-        self._cache_timestamps = {}
+        self.espn = ESPNFetcher()
+        self.pbp = PBPFetcher() if use_pbp_validation else None
+        self._cache: Dict[str, StarterInfo] = {}
+        self._cache_time: Optional[datetime] = None
+        self._cache_ttl_minutes = 30
 
-    def get_all_starters(self, position: str = 'QB') -> Dict[str, dict]:
+    def _is_cache_valid(self) -> bool:
+        """Check if cache is still valid."""
+        if self._cache_time is None:
+            return False
+        age_minutes = (datetime.now() - self._cache_time).total_seconds() / 60
+        return age_minutes < self._cache_ttl_minutes
+
+    def get_starter(self, team: str, force_refresh: bool = False) -> Optional[StarterInfo]:
         """
-        Get current starters for all 32 teams.
+        Get starting QB for a team.
 
         Args:
-            position: Position to check (default 'QB')
+            team: Team abbreviation (will be normalized)
+            force_refresh: Bypass cache if True
 
         Returns:
-            Dict mapping team abbrev to starter info:
-            {
-                'ARI': {
-                    'starter': 'Kyler Murray',
-                    'backup': 'Clayton Tune',
-                    'status': 'HEALTHY',  # or OUT, DOUBTFUL, QUESTIONABLE
-                    'actual_starter': 'Kyler Murray',  # from PBP verification
-                    'confidence': 'high',  # high, medium, low
-                    'notes': [],
-                    'games_started': 10,
-                    'last_updated': '2025-11-26T15:30:00'
-                },
-                ...
-            }
+            StarterInfo or None if unable to determine
         """
-        starters = {}
-
-        for team_abbrev in self.ESPN_TEAM_IDS.keys():
-            try:
-                starters[team_abbrev] = self.get_team_starter(team_abbrev, position)
-            except Exception as e:
-                starters[team_abbrev] = {
-                    'starter': 'UNKNOWN',
-                    'backup': 'UNKNOWN',
-                    'status': 'ERROR',
-                    'confidence': 'none',
-                    'notes': [f'Error fetching data: {str(e)}'],
-                    'last_updated': datetime.now().isoformat()
-                }
-
-        return starters
-
-    def get_team_starter(self, team_abbrev: str, position: str = 'QB') -> dict:
-        """
-        Get current starter for a specific team and position.
-
-        Args:
-            team_abbrev: Team abbreviation (e.g., 'ARI', 'KC')
-            position: Position to check
-
-        Returns:
-            Starter info dict
-        """
-        team_id = self.ESPN_TEAM_IDS.get(team_abbrev)
-        if not team_id:
-            raise ValueError(f"Unknown team: {team_abbrev}")
-
-        notes = []
-
-        # Step 1: Get depth chart
-        depth_chart = self._get_depth_chart(team_id)
-        position_depth = depth_chart.get(position, [])
-
-        if not position_depth:
-            return {
-                'starter': 'UNKNOWN',
-                'backup': 'UNKNOWN',
-                'status': 'NO_DATA',
-                'confidence': 'none',
-                'notes': [f'No {position} found in depth chart'],
-                'last_updated': datetime.now().isoformat()
-            }
-
-        qb1_name = position_depth[0] if len(position_depth) > 0 else 'UNKNOWN'
-        qb2_name = position_depth[1] if len(position_depth) > 1 else 'UNKNOWN'
-
-        # Step 2: Check injuries
-        injuries = self._get_injuries(team_id)
-        qb1_status = injuries.get(qb1_name, 'HEALTHY')
-        qb2_status = injuries.get(qb2_name, 'HEALTHY')
-
-        # Step 3: Determine actual starter based on injury status
-        if qb1_status == 'OUT':
-            actual_starter = qb2_name
-            confidence = 'high'
-            notes.append(f'{qb1_name} is OUT - {qb2_name} starting')
-
-            # Check if backup is also injured
-            if qb2_status == 'OUT':
-                qb3_name = position_depth[2] if len(position_depth) > 2 else 'UNKNOWN'
-                actual_starter = qb3_name
-                notes.append(f'{qb2_name} also OUT - {qb3_name} starting')
-                confidence = 'medium'
-
-        elif qb1_status == 'DOUBTFUL':
-            actual_starter = qb1_name  # Listed but likely won't play
-            confidence = 'low'
-            notes.append(f'{qb1_name} is DOUBTFUL - may not play')
-
-        elif qb1_status == 'QUESTIONABLE':
-            actual_starter = qb1_name
-            confidence = 'medium'
-            notes.append(f'{qb1_name} is QUESTIONABLE')
-
-        else:
-            actual_starter = qb1_name
-            confidence = 'high'
-
-        # Step 4: Try to verify with PBP data (most recent game)
-        pbp_starter = self._verify_with_pbp(team_abbrev)
-        if pbp_starter and pbp_starter != actual_starter:
-            notes.append(f'PBP shows {pbp_starter} started last game, not {actual_starter}')
-            # Trust PBP over depth chart for recent history
-            if confidence == 'high':
-                confidence = 'medium'
-
-        # Step 5: Get games started count
-        games_started = self._get_games_started(team_abbrev, actual_starter)
-
-        return {
-            'starter': qb1_name,
-            'backup': qb2_name,
-            'status': qb1_status,
-            'actual_starter': actual_starter,
-            'confidence': confidence,
-            'notes': notes,
-            'games_started': games_started,
-            'last_updated': datetime.now().isoformat()
-        }
-
-    def _get_depth_chart(self, team_id: int) -> Dict[str, List[str]]:
-        """Fetch depth chart from ESPN API."""
-        cache_key = f'depth_{team_id}'
-
-        # Check cache
-        if cache_key in self._depth_chart_cache:
-            cache_time = self._cache_timestamps.get(cache_key)
-            if cache_time and datetime.now() - cache_time < self.cache_duration:
-                return self._depth_chart_cache[cache_key]
-
-        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team_id}/depthcharts"
-
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            print(f"Error fetching depth chart for team {team_id}: {e}")
-            return {}
-
-        # Parse depth chart
-        depth_chart = {}
-
-        try:
-            items = data.get('items', [])
-            for item in items:
-                # Find offense positions
-                positions = item.get('positions', {})
-                for pos_data in positions.values():
-                    pos_name = pos_data.get('position', {}).get('abbreviation', '')
-                    athletes = pos_data.get('athletes', [])
-
-                    player_names = []
-                    for athlete in athletes:
-                        name = athlete.get('athlete', {}).get('displayName', '')
-                        if name:
-                            player_names.append(name)
-
-                    if pos_name and player_names:
-                        depth_chart[pos_name] = player_names
-
-        except Exception as e:
-            print(f"Error parsing depth chart: {e}")
-
-        # Cache result
-        self._depth_chart_cache[cache_key] = depth_chart
-        self._cache_timestamps[cache_key] = datetime.now()
-
-        return depth_chart
-
-    def _get_injuries(self, team_id: int) -> Dict[str, str]:
-        """Fetch injury report from ESPN API."""
-        cache_key = f'injuries_{team_id}'
-
-        # Check cache
-        if cache_key in self._injury_cache:
-            cache_time = self._cache_timestamps.get(cache_key)
-            if cache_time and datetime.now() - cache_time < self.cache_duration:
-                return self._injury_cache[cache_key]
-
-        url = f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/teams/{team_id}/injuries"
-
-        try:
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            print(f"Error fetching injuries for team {team_id}: {e}")
-            return {}
-
-        injuries = {}
-
-        try:
-            items = data.get('items', [])
-            for item in items:
-                # Each item has a $ref to athlete details
-                athlete_ref = item.get('athlete', {}).get('$ref', '')
-                status = item.get('status', 'UNKNOWN')
-
-                # Fetch athlete name if needed
-                if athlete_ref:
-                    try:
-                        athlete_resp = requests.get(athlete_ref, timeout=5)
-                        athlete_data = athlete_resp.json()
-                        name = athlete_data.get('displayName', '')
-                        if name:
-                            # Normalize status
-                            status_upper = status.upper()
-                            if 'OUT' in status_upper:
-                                injuries[name] = 'OUT'
-                            elif 'DOUBT' in status_upper:
-                                injuries[name] = 'DOUBTFUL'
-                            elif 'QUESTION' in status_upper:
-                                injuries[name] = 'QUESTIONABLE'
-                            elif 'PROB' in status_upper:
-                                injuries[name] = 'PROBABLE'
-                            else:
-                                injuries[name] = status_upper
-                    except:
-                        pass
-
-        except Exception as e:
-            print(f"Error parsing injuries: {e}")
-
-        # Cache result
-        self._injury_cache[cache_key] = injuries
-        self._cache_timestamps[cache_key] = datetime.now()
-
-        return injuries
-
-    def _verify_with_pbp(self, team_abbrev: str, weeks_back: int = 1) -> Optional[str]:
-        """
-        Verify starter using play-by-play data.
-        Returns the QB who had most pass attempts in most recent game.
-        """
-        try:
-            # Get current week
-            current_week = self._get_current_week()
-            target_week = max(1, current_week - weeks_back)
-
-            # Load PBP data
-            pbp = nfl.import_pbp_data([2025])
-
-            # Filter to team's most recent game
-            team_plays = pbp[
-                (pbp['posteam'] == team_abbrev) &
-                (pbp['week'] == target_week) &
-                (pbp['play_type'] == 'pass')
-            ]
-
-            if team_plays.empty:
-                return None
-
-            # Find QB with most attempts
-            qb_attempts = team_plays.groupby('passer_player_name').size()
-            if qb_attempts.empty:
-                return None
-
-            starter = qb_attempts.idxmax()
-            return starter
-
-        except Exception as e:
-            print(f"Error verifying with PBP: {e}")
+        team = normalize_team_name(team)
+        if team is None:
+            logger.error(f"Invalid team: {team}")
             return None
 
-    def _get_games_started(self, team_abbrev: str, player_name: str) -> int:
-        """Get number of games a player has started this season."""
-        try:
-            pbp = nfl.import_pbp_data([2025])
+        # Check cache
+        if not force_refresh and self._is_cache_valid() and team in self._cache:
+            logger.debug(f"Returning cached starter for {team}")
+            return self._cache[team]
 
-            # Count weeks where this player had majority of pass attempts
-            team_plays = pbp[
-                (pbp['posteam'] == team_abbrev) &
-                (pbp['play_type'] == 'pass')
-            ]
+        logger.info(f"Detecting starter for {team}")
+        sources = []
 
-            games_started = 0
-            for week in team_plays['week'].unique():
-                week_plays = team_plays[team_plays['week'] == week]
-                if week_plays.empty:
-                    continue
+        # 1. Get depth chart
+        depth_data = self.espn.get_depth_chart(team)
+        qbs = self.espn.parse_qb_from_depth_chart(depth_data) if depth_data else []
 
-                qb_attempts = week_plays.groupby('passer_player_name').size()
-                if qb_attempts.empty:
-                    continue
+        if not qbs:
+            logger.warning(f"No QBs found in depth chart for {team}")
+            # Try roster as fallback
+            roster = self.espn.get_roster(team)
+            if roster:
+                for player in roster:
+                    pos = player.get("position", {}).get("abbreviation", "")
+                    if pos.upper() == "QB":
+                        qbs.append({
+                            "name": player.get("displayName", "Unknown"),
+                            "id": str(player.get("id", "")),
+                            "rank": len(qbs) + 1,
+                        })
+                if qbs:
+                    sources.append("roster")
+        else:
+            sources.append("depth_chart")
 
-                week_starter = qb_attempts.idxmax()
-                if week_starter == player_name:
-                    games_started += 1
+        if not qbs:
+            logger.error(f"Could not find any QBs for {team}")
+            return None
 
-            return games_started
+        # Get the #1 QB from depth chart
+        starter_qb = qbs[0]
+        starter_name = starter_qb["name"]
+        starter_id = starter_qb.get("id")
+        starter_rank = starter_qb.get("rank", 1)
 
-        except Exception as e:
-            print(f"Error getting games started: {e}")
-            return 0
+        # 2. Check injuries
+        injuries = self.espn.get_injuries(team)
+        qb_injuries = self.espn.parse_qb_injuries(injuries) if injuries else {}
 
-    def _get_current_week(self) -> int:
-        """Estimate current NFL week based on date."""
-        # 2025 season starts Sept 4, 2025
-        season_start = datetime(2025, 9, 4)
-        today = datetime.now()
+        injury_status = InjuryStatus.HEALTHY
+        injury_detail = None
 
-        if today < season_start:
-            return 0
+        if starter_name in qb_injuries:
+            injury_info = qb_injuries[starter_name]
+            injury_status = injury_info["status"]
+            injury_detail = injury_info.get("detail")
+            sources.append("injury_report")
+            logger.info(f"{team} QB {starter_name}: {injury_status.value} ({injury_detail})")
 
-        days_since_start = (today - season_start).days
-        current_week = (days_since_start // 7) + 1
+            # If starter is OUT/IR, look for backup
+            if injury_status in (InjuryStatus.OUT, InjuryStatus.IR, InjuryStatus.PUP):
+                logger.info(f"{team} starter {starter_name} is {injury_status.value}, checking backup")
+                for qb in qbs[1:]:
+                    backup_name = qb["name"]
+                    if backup_name not in qb_injuries:
+                        # Backup is healthy
+                        starter_name = backup_name
+                        starter_id = qb.get("id")
+                        starter_rank = qb.get("rank", 2)
+                        injury_status = InjuryStatus.HEALTHY
+                        injury_detail = f"Filling in for injured {qbs[0]['name']}"
+                        logger.info(f"{team} backup {starter_name} expected to start")
+                        break
+                    else:
+                        backup_injury = qb_injuries[backup_name]
+                        if backup_injury["status"] not in (InjuryStatus.OUT, InjuryStatus.IR, InjuryStatus.PUP):
+                            starter_name = backup_name
+                            starter_id = qb.get("id")
+                            starter_rank = qb.get("rank", 2)
+                            injury_status = backup_injury["status"]
+                            injury_detail = backup_injury.get("detail")
+                            break
 
-        return min(current_week, 18)  # Cap at week 18
+        # 3. Validate with PBP data
+        recent_snap_pct = None
+        last_game_snaps = None
 
+        if self.pbp:
+            pbp_data = self.pbp.get_recent_qb_snaps(team)
+            if pbp_data:
+                sources.append("pbp_validation")
+                # Try to match starter name to PBP names (last name matching)
+                starter_last = starter_name.split()[-1].lower() if starter_name else ""
+                for pbp_name, data in pbp_data.items():
+                    pbp_last = pbp_name.split()[-1].lower() if pbp_name else ""
+                    if starter_last and pbp_last and starter_last == pbp_last:
+                        recent_snap_pct = data.get("snap_pct")
+                        last_game_snaps = data.get("snaps")
+                        logger.debug(f"PBP match: {starter_name} -> {pbp_name}, {recent_snap_pct:.1%} snaps")
+                        break
 
-class QBStatsAdjuster:
-    """Adjusts QB stats based on current starter information."""
+        # 4. Determine confidence level
+        confidence = self._calculate_confidence(
+            sources=sources,
+            injury_status=injury_status,
+            depth_rank=starter_rank,
+            snap_pct=recent_snap_pct,
+        )
 
-    def __init__(self, starter_detector: StarterDetector):
-        self.detector = starter_detector
-        self._weekly_data = None
-        self._seasonal_data = None
+        # Build StarterInfo
+        starter_info = StarterInfo(
+            team=team,
+            player_name=starter_name,
+            player_id=starter_id,
+            injury_status=injury_status,
+            injury_detail=injury_detail,
+            confidence=confidence,
+            depth_chart_rank=starter_rank,
+            recent_snap_pct=recent_snap_pct,
+            last_game_snaps=last_game_snaps,
+            sources=sources,
+            last_updated=datetime.now(),
+        )
 
-    def load_data(self):
-        """Load weekly and seasonal QB data."""
-        print("Loading QB data from nfl_data_py...")
-        self._weekly_data = nfl.import_weekly_data([2024, 2025])
-        self._seasonal_data = nfl.import_seasonal_data([2024, 2025])
-        print(f"Loaded {len(self._weekly_data)} weekly records")
+        # Cache result
+        self._cache[team] = starter_info
+        self._cache_time = datetime.now()
 
-    def get_current_qb_stats(self, team_abbrev: str) -> dict:
+        logger.info(
+            f"{team}: {starter_name} (Confidence: {confidence.value}, "
+            f"Injury: {injury_status.value})"
+        )
+
+        return starter_info
+
+    def _calculate_confidence(
+        self,
+        sources: List[str],
+        injury_status: InjuryStatus,
+        depth_rank: int,
+        snap_pct: Optional[float],
+    ) -> ConfidenceLevel:
         """
-        Get stats for the CURRENT starting QB only.
+        Calculate confidence level based on available data.
+
+        HIGH: Multiple sources agree, healthy or minor injury, high snap %
+        MEDIUM: Depth chart only, or questionable injury, or lower snap %
+        LOW: Sources disagree, doubtful injury, backup starting, or limited data
+        """
+        score = 0
+
+        # Source agreement
+        if "depth_chart" in sources:
+            score += 2
+        if "pbp_validation" in sources:
+            score += 1
+        if len(sources) >= 2:
+            score += 1
+
+        # Injury impact
+        if injury_status == InjuryStatus.HEALTHY:
+            score += 2
+        elif injury_status == InjuryStatus.QUESTIONABLE:
+            score += 0  # Neutral
+        elif injury_status == InjuryStatus.DOUBTFUL:
+            score -= 2
+        elif injury_status in (InjuryStatus.OUT, InjuryStatus.IR):
+            score -= 3  # Major concern if we're predicting they start
+
+        # Depth chart position
+        if depth_rank == 1:
+            score += 1
+        elif depth_rank >= 3:
+            score -= 2
+
+        # Snap percentage validation
+        if snap_pct is not None:
+            if snap_pct >= 0.8:
+                score += 2
+            elif snap_pct >= 0.5:
+                score += 1
+            elif snap_pct < 0.3:
+                score -= 1
+
+        # Convert score to confidence level
+        if score >= 5:
+            return ConfidenceLevel.HIGH
+        elif score >= 2:
+            return ConfidenceLevel.MEDIUM
+        else:
+            return ConfidenceLevel.LOW
+
+    def get_all_starters(self, force_refresh: bool = False) -> Dict[str, StarterInfo]:
+        """
+        Get starting QBs for all 32 teams.
+
+        Args:
+            force_refresh: Bypass cache if True
 
         Returns:
-            Dict with QB stats adjusted for current starter
+            Dict mapping team abbreviation to StarterInfo
         """
-        if self._weekly_data is None:
-            self.load_data()
+        logger.info("Fetching starters for all 32 NFL teams...")
+        starters = {}
 
-        # Get current starter info
-        starter_info = self.detector.get_team_starter(team_abbrev)
-        current_qb = starter_info['actual_starter']
-        confidence = starter_info['confidence']
-        games_started = starter_info['games_started']
+        for team in sorted(NFL_TEAMS):
+            try:
+                info = self.get_starter(team, force_refresh=force_refresh)
+                if info:
+                    starters[team] = info
+                else:
+                    logger.warning(f"Could not determine starter for {team}")
+            except Exception as e:
+                logger.error(f"Error getting starter for {team}: {e}")
 
-        # Filter weekly data to current QB
-        qb_weekly = self._weekly_data[
-            (self._weekly_data['player_display_name'] == current_qb) &
-            (self._weekly_data['recent_team'] == team_abbrev) &
-            (self._weekly_data['season'] == 2025)
+        logger.info(f"Found starters for {len(starters)}/32 teams")
+        return starters
+
+    def export_to_csv(self, filepath: str, starters: Optional[Dict[str, StarterInfo]] = None):
+        """
+        Export starter data to CSV.
+
+        Args:
+            filepath: Output file path
+            starters: Dict of starters (fetches all if not provided)
+        """
+        import csv
+
+        if starters is None:
+            starters = self.get_all_starters()
+
+        headers = [
+            "team", "player_name", "player_id", "injury_status",
+            "injury_detail", "confidence", "depth_chart_rank",
+            "recent_snap_pct", "last_game_snaps", "sources", "last_updated"
         ]
 
-        if qb_weekly.empty:
-            # Try partial name match
-            qb_weekly = self._weekly_data[
-                (self._weekly_data['player_display_name'].str.contains(current_qb.split()[-1], case=False, na=False)) &
-                (self._weekly_data['recent_team'] == team_abbrev) &
-                (self._weekly_data['season'] == 2025) &
-                (self._weekly_data['position'] == 'QB')
-            ]
+        with open(filepath, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
 
-        if qb_weekly.empty:
-            return {
-                'qb_name': current_qb,
-                'team': team_abbrev,
-                'games': 0,
-                'passing_epa': None,
-                'cpoe': None,
-                'passing_yards': None,
-                'passing_tds': None,
-                'interceptions': None,
-                'completion_pct': None,
-                'confidence': 'none',
-                'notes': [f'No 2025 data found for {current_qb}']
-            }
+            for team in sorted(starters.keys()):
+                info = starters[team]
+                writer.writerow([
+                    info.team,
+                    info.player_name,
+                    info.player_id or "",
+                    info.injury_status.value,
+                    info.injury_detail or "",
+                    info.confidence.value,
+                    info.depth_chart_rank,
+                    f"{info.recent_snap_pct:.2f}" if info.recent_snap_pct else "",
+                    info.last_game_snaps or "",
+                    ",".join(info.sources),
+                    info.last_updated.isoformat(),
+                ])
 
-        # Calculate stats
-        total_attempts = qb_weekly['attempts'].sum()
-        total_completions = qb_weekly['completions'].sum()
+        logger.info(f"Exported {len(starters)} starters to {filepath}")
 
-        stats = {
-            'qb_name': current_qb,
-            'team': team_abbrev,
-            'games': len(qb_weekly),
-            'passing_epa': qb_weekly['passing_epa'].mean() if 'passing_epa' in qb_weekly.columns else None,
-            'cpoe': qb_weekly['pacr'].mean() if 'pacr' in qb_weekly.columns else None,  # Passer rating as proxy
-            'passing_yards': qb_weekly['passing_yards'].sum(),
-            'passing_tds': qb_weekly['passing_tds'].sum(),
-            'interceptions': qb_weekly['interceptions'].sum(),
-            'completion_pct': (total_completions / total_attempts * 100) if total_attempts > 0 else None,
-            'yards_per_attempt': qb_weekly['passing_yards'].sum() / total_attempts if total_attempts > 0 else None,
-            'confidence': confidence,
-            'notes': starter_info['notes'],
-            'injury_status': starter_info['status']
+    def print_report(self, starters: Optional[Dict[str, StarterInfo]] = None):
+        """Print a formatted report of all starters."""
+        if starters is None:
+            starters = self.get_all_starters()
+
+        print("\n" + "=" * 70)
+        print("NFL STARTING QB REPORT")
+        print(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        print("=" * 70)
+
+        # Group by confidence
+        by_confidence = {
+            ConfidenceLevel.HIGH: [],
+            ConfidenceLevel.MEDIUM: [],
+            ConfidenceLevel.LOW: [],
         }
 
-        # Add confidence adjustment based on sample size
-        if stats['games'] < 3:
-            stats['confidence'] = 'low'
-            stats['notes'].append(f"Small sample size: only {stats['games']} games")
-
-        return stats
-
-    def get_all_qb_stats(self) -> pd.DataFrame:
-        """Get current QB stats for all 32 teams."""
-        all_stats = []
-
-        for team in self.detector.ESPN_TEAM_IDS.keys():
-            stats = self.get_current_qb_stats(team)
-            all_stats.append(stats)
-            time.sleep(0.1)  # Rate limiting
-
-        return pd.DataFrame(all_stats)
-
-
-class ModelIntegration:
-    """Integrates starter detection with the NFL prediction model."""
-
-    def __init__(self):
-        self.detector = StarterDetector()
-        self.stats_adjuster = QBStatsAdjuster(self.detector)
-
-    def get_adjusted_team_factors(self, team_abbrev: str) -> dict:
-        """
-        Get team factors adjusted for current starter.
-
-        This replaces the static team factors with dynamic ones
-        that account for who is actually playing.
-        """
-        # Get current QB stats
-        qb_stats = self.stats_adjuster.get_current_qb_stats(team_abbrev)
-
-        # Get starter info for other positions (future expansion)
-        # For now, focus on QB as it's most impactful
-
-        return {
-            'team': team_abbrev,
-            'qb_factor': {
-                'name': qb_stats['qb_name'],
-                'epa_per_play': qb_stats.get('passing_epa'),
-                'cpoe': qb_stats.get('cpoe'),
-                'games_as_starter': qb_stats['games'],
-                'injury_status': qb_stats.get('injury_status', 'UNKNOWN'),
-                'confidence': qb_stats['confidence']
-            },
-            'warnings': qb_stats['notes'],
-            'data_quality': self._assess_data_quality(qb_stats)
-        }
-
-    def _assess_data_quality(self, qb_stats: dict) -> str:
-        """Assess overall data quality for model confidence."""
-        if qb_stats['confidence'] == 'none':
-            return 'UNRELIABLE'
-        elif qb_stats['confidence'] == 'low':
-            return 'LOW'
-        elif qb_stats['games'] < 5:
-            return 'MODERATE'
-        else:
-            return 'HIGH'
-
-    def generate_starter_report(self) -> pd.DataFrame:
-        """Generate report of all current starters with confidence levels."""
-        starters = self.detector.get_all_starters()
-
-        report_data = []
         for team, info in starters.items():
-            report_data.append({
-                'team': team,
-                'qb1_listed': info['starter'],
-                'qb1_status': info['status'],
-                'actual_starter': info.get('actual_starter', info['starter']),
-                'backup': info['backup'],
-                'games_started': info.get('games_started', 0),
-                'confidence': info['confidence'],
-                'notes': '; '.join(info['notes']) if info['notes'] else ''
-            })
+            by_confidence[info.confidence].append((team, info))
 
-        df = pd.DataFrame(report_data)
-        return df.sort_values('confidence', ascending=True)
+        for confidence in [ConfidenceLevel.HIGH, ConfidenceLevel.MEDIUM, ConfidenceLevel.LOW]:
+            teams = by_confidence[confidence]
+            if not teams:
+                continue
 
-    def get_low_confidence_teams(self) -> List[str]:
-        """Get list of teams where starter data is uncertain."""
-        starters = self.detector.get_all_starters()
+            print(f"\n{confidence.value} CONFIDENCE ({len(teams)} teams):")
+            print("-" * 70)
 
-        low_confidence = []
-        for team, info in starters.items():
-            if info['confidence'] in ['low', 'none']:
-                low_confidence.append(team)
+            for team, info in sorted(teams):
+                injury_str = ""
+                if info.injury_status != InjuryStatus.HEALTHY:
+                    injury_str = f" [{info.injury_status.value}"
+                    if info.injury_detail:
+                        injury_str += f" - {info.injury_detail}"
+                    injury_str += "]"
 
-        return low_confidence
+                snap_str = ""
+                if info.recent_snap_pct:
+                    snap_str = f" ({info.recent_snap_pct:.0%} snaps)"
 
+                print(f"  {team:3s}: {info.player_name:<25}{injury_str}{snap_str}")
 
-def refresh_all_data():
-    """Refresh all starter and injury data - run before model predictions."""
-    print("=" * 60)
-    print("NFL STARTER & INJURY DATA REFRESH")
-    print("=" * 60)
-    print(f"Timestamp: {datetime.now().isoformat()}")
-    print()
+        # Summary
+        healthy = sum(1 for i in starters.values() if i.injury_status == InjuryStatus.HEALTHY)
+        questionable = sum(1 for i in starters.values() if i.injury_status == InjuryStatus.QUESTIONABLE)
 
-    integration = ModelIntegration()
-
-    # Generate starter report
-    print("Fetching depth charts and injury reports...")
-    report = integration.generate_starter_report()
-
-    # Save to CSV
-    output_file = OUTPUTS_DIR / 'current_starters.csv'
-    report.to_csv(output_file, index=False)
-    print(f"\nSaved starter report to {output_file}")
-
-    # Show summary
-    print("\n" + "=" * 60)
-    print("STARTER CONFIDENCE SUMMARY")
-    print("=" * 60)
-
-    confidence_counts = report['confidence'].value_counts()
-    for conf, count in confidence_counts.items():
-        print(f"  {conf.upper()}: {count} teams")
-
-    # Show low confidence teams
-    low_conf = report[report['confidence'].isin(['low', 'none'])]
-    if not low_conf.empty:
-        print("\n  LOW CONFIDENCE TEAMS (review manually):")
-        for _, row in low_conf.iterrows():
-            print(f"  {row['team']}: {row['actual_starter']} - {row['notes']}")
-
-    # Show injured starters
-    injured = report[report['qb1_status'] != 'HEALTHY']
-    if not injured.empty:
-        print("\n  INJURED STARTING QBs:")
-        for _, row in injured.iterrows():
-            print(f"  {row['team']}: {row['qb1_listed']} ({row['qb1_status']}) -> {row['actual_starter']}")
-
-    print("\n" + "=" * 60)
-    print("DATA REFRESH COMPLETE")
-    print("=" * 60)
-
-    return report
+        print("\n" + "-" * 70)
+        print(f"SUMMARY: {len(starters)} teams, {healthy} healthy, {questionable} questionable")
+        print("=" * 70)
 
 
-# Example usage and CLI
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+def detect_starters():
+    """Main function to run starter detection."""
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    detector = StarterDetector(use_pbp_validation=True)
+    starters = detector.get_all_starters()
+    detector.print_report(starters)
+
+    # Export to outputs directory
+    from pathlib import Path
+    outputs_dir = Path(__file__).parent.parent / "outputs"
+    outputs_dir.mkdir(exist_ok=True)
+    detector.export_to_csv(str(outputs_dir / "starters.csv"), starters)
+
+    return starters
+
+
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1:
-        if sys.argv[1] == 'refresh':
-            refresh_all_data()
-        elif sys.argv[1] == 'team' and len(sys.argv) > 2:
-            team = sys.argv[2].upper()
-            detector = StarterDetector()
-            info = detector.get_team_starter(team)
-            print(f"\n{team} Starter Info:")
-            print(json.dumps(info, indent=2))
-        else:
-            print("Usage:")
-            print("  python starter_detector.py refresh    # Refresh all data")
-            print("  python starter_detector.py team ARI   # Get specific team")
-    else:
-        # Demo run
-        print("Running demo...")
-        refresh_all_data()
+    detect_starters()

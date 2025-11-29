@@ -1,611 +1,376 @@
+#!/usr/bin/env python3
 """
-NFL Model Audit & Verification System
-======================================
-Creates transparent, verifiable logs that a non-technical user can understand.
+Audit Logger for Factor Calculations
 
-Design Principles:
-1. Every API call is logged with timestamp and response sample
-2. Every calculation shows inputs -> formula -> output
-3. Warnings are human-readable, not error codes
-4. Everything exportable as PDF/HTML report
+Tracks all factor calculations with detailed logging:
+- Data sources used
+- Missing data fields
+- Calculation errors
+- Data quality metrics
 """
 
 import json
-import hashlib
+import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from pathlib import Path
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-import pandas as pd
+
+AUDIT_DIR = Path(__file__).parent.parent / "data" / "audit"
 
 
-class VerificationStatus(Enum):
-    """Traffic light status for quick scanning."""
-    VERIFIED = "Verified"
-    WARNING = "Warning"
-    FAILED = "Failed"
-    PENDING = "Pending"
-    SKIPPED = "Skipped"
+class DataSource(Enum):
+    """Data source types for factor calculations."""
+    FTN_EPA = "FTN EPA"
+    ESPN_2025 = "ESPN 2025 Stats"
+    NFL_DATA_PY = "nfl_data_py historical"
+    ESPN_ROSTER = "ESPN Roster API"
+    PFF_GRADES = "PFF Grades"
+    ELOS = "Elo Ratings"
+    PBP = "Play-by-Play"
+    BASELINE = "Baseline/Default"
 
 
-@dataclass
-class APICallLog:
-    """Record of a single API call - proves we actually fetched data."""
-    timestamp: str
-    endpoint: str
-    team: Optional[str]
-    status_code: int
-    response_hash: str  # SHA256 of response for integrity
-    response_sample: str  # First 500 chars for human verification
-    latency_ms: int
-    cached: bool
-
-    def to_human_readable(self) -> str:
-        """Format for non-technical user."""
-        cached_note = " (from cache)" if self.cached else " (fresh call)"
-        return f"""
-API Call at {self.timestamp}{cached_note}
-- Endpoint: {self.endpoint}
-- Team: {self.team or 'All teams'}
-- Response: {self.status_code} {'OK' if self.status_code == 200 else 'ERROR'}
-- Speed: {self.latency_ms}ms
-- Data fingerprint: {self.response_hash[:12]}...
-- Sample: "{self.response_sample[:200]}..."
-"""
+class DataQuality(Enum):
+    """Data quality levels."""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    MISSING = "missing"
 
 
 @dataclass
-class CalculationStep:
-    """Single step in a calculation - shows the math."""
-    step_number: int
-    description: str
-    inputs: Dict[str, Any]
-    formula: str
-    output: Any
-
-    def to_human_readable(self) -> str:
-        inputs_str = ", ".join(f"{k}={v}" for k, v in self.inputs.items())
-        return f"""
-Step {self.step_number}: {self.description}
-- Inputs: {inputs_str}
-- Formula: {self.formula}
-- Result: {self.output}
-"""
-
-
-@dataclass
-class CalculationAudit:
-    """Full audit trail for one team's score calculation."""
+class FactorAuditEntry:
+    """Single audit entry for a factor calculation."""
+    factor_name: str
     team: str
-    final_score: float
-    profile: str
     timestamp: str
-    steps: List[CalculationStep] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    success: bool
+    score: Optional[float] = None
     data_sources: List[str] = field(default_factory=list)
+    missing_fields: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+    data_quality: str = "unknown"
+    sample_size: int = 0
+    raw_values: Dict[str, Any] = field(default_factory=dict)
 
-    def to_human_readable(self) -> str:
-        steps_text = "\n".join(s.to_human_readable() for s in self.steps)
-        warnings_text = "\n".join(f"- {w}" for w in self.warnings) if self.warnings else "None"
-        sources_text = "\n".join(f"- {s}" for s in self.data_sources)
-
-        return f"""
-# Calculation Audit: {self.team}
-Final Score: {self.final_score:.1f} (Profile: {self.profile})
-Generated: {self.timestamp}
-
-## Data Sources Used
-{sources_text}
-
-## Warnings
-{warnings_text}
-
-## Calculation Steps
-{steps_text}
-"""
+    def to_dict(self) -> Dict:
+        return asdict(self)
 
 
 @dataclass
-class DataFreshnessCheck:
-    """Proves data is recent, not stale."""
-    source: str
-    last_fetched: str
-    age_minutes: int
-    max_age_minutes: int
-    status: VerificationStatus
+class FactorAuditReport:
+    """Complete audit report for all factor calculations."""
+    run_id: str
+    timestamp: str
+    season: int
+    week: Optional[int]
+    factors_calculated: int = 0
+    factors_succeeded: int = 0
+    factors_failed: int = 0
+    teams_processed: int = 0
+    data_sources_used: List[str] = field(default_factory=list)
+    missing_data_summary: Dict[str, int] = field(default_factory=dict)
+    entries: List[FactorAuditEntry] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
 
-    def to_human_readable(self) -> str:
-        if self.age_minutes < 60:
-            age_str = f"{self.age_minutes} minutes ago"
-        elif self.age_minutes < 1440:
-            age_str = f"{self.age_minutes // 60} hours ago"
-        else:
-            age_str = f"{self.age_minutes // 1440} days ago"
-
-        return f"""
-{self.source}: {self.status.value}
-- Last updated: {self.last_fetched} ({age_str})
-- Max allowed age: {self.max_age_minutes} minutes
-"""
-
-
-@dataclass
-class CrossValidationCheck:
-    """Compares two sources to verify they agree."""
-    check_name: str
-    source_a: str
-    source_a_value: Any
-    source_b: str
-    source_b_value: Any
-    match: bool
-    tolerance: Optional[float]
-    explanation: str
-    status: VerificationStatus
-
-    def to_human_readable(self) -> str:
-        match_str = "MATCH" if self.match else "MISMATCH"
-        return f"""
-{self.check_name}: {match_str}
-- {self.source_a}: {self.source_a_value}
-- {self.source_b}: {self.source_b_value}
-- {self.explanation}
-"""
-
-
-@dataclass
-class SanityCheck:
-    """Verifies outputs are in expected ranges."""
-    check_name: str
-    value: Any
-    expected_min: Optional[float]
-    expected_max: Optional[float]
-    passed: bool
-    explanation: str
-    status: VerificationStatus
-
-    def to_human_readable(self) -> str:
-        range_str = ""
-        if self.expected_min is not None and self.expected_max is not None:
-            range_str = f"Expected range: [{self.expected_min}, {self.expected_max}]"
-        elif self.expected_min is not None:
-            range_str = f"Expected minimum: {self.expected_min}"
-        elif self.expected_max is not None:
-            range_str = f"Expected maximum: {self.expected_max}"
-
-        return f"""
-{self.check_name}: {self.status.value}
-- Value: {self.value}
-- {range_str}
-- {self.explanation}
-"""
+    def to_dict(self) -> Dict:
+        return {
+            'run_id': self.run_id,
+            'timestamp': self.timestamp,
+            'season': self.season,
+            'week': self.week,
+            'factors_calculated': self.factors_calculated,
+            'factors_succeeded': self.factors_succeeded,
+            'factors_failed': self.factors_failed,
+            'teams_processed': self.teams_processed,
+            'data_sources_used': self.data_sources_used,
+            'missing_data_summary': self.missing_data_summary,
+            'entries': [e.to_dict() for e in self.entries],
+            'errors': self.errors
+        }
 
 
 class AuditLogger:
     """
-    Central audit logger that collects all verification data.
+    Logger for factor calculation auditing.
 
     Usage:
-        logger = AuditLogger()
-        logger.log_api_call(...)
-        logger.log_calculation(...)
-        report = logger.generate_report()
+        audit = AuditLogger(season=2024, week=12)
+        audit.log_factor_start("qb_quality", "KC")
+        audit.log_data_source("FTN EPA")
+        audit.log_missing_field("cpoe")
+        audit.log_factor_complete("qb_quality", "KC", score=85.3, success=True)
+        audit.save_report()
     """
 
-    def __init__(self):
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_start = datetime.now()
+    def __init__(self, season: int = 2024, week: int = None):
+        self.season = season
+        self.week = week
+        self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.timestamp = datetime.now().isoformat()
 
-        self.api_calls: List[APICallLog] = []
-        self.calculations: List[CalculationAudit] = []
-        self.freshness_checks: List[DataFreshnessCheck] = []
-        self.cross_validations: List[CrossValidationCheck] = []
-        self.sanity_checks: List[SanityCheck] = []
-        self.warnings: List[Dict] = []
-        self.errors: List[Dict] = []
+        # Current factor being logged
+        self._current_factor: Optional[str] = None
+        self._current_team: Optional[str] = None
+        self._current_entry: Optional[FactorAuditEntry] = None
 
-    def log_api_call(self, endpoint: str, team: Optional[str],
-                     status_code: int, response_body: str,
-                     latency_ms: int, cached: bool = False):
-        """Log an API call with proof of fetch."""
+        # All entries
+        self.entries: List[FactorAuditEntry] = []
+        self.data_sources_used: set = set()
+        self.missing_data_counts: Dict[str, int] = {}
+        self.errors: List[str] = []
 
-        # Create hash for integrity verification
-        response_hash = hashlib.sha256(response_body.encode()).hexdigest()
+        # Teams processed
+        self.teams_processed: set = set()
 
-        # Sample first 500 chars for human review
-        response_sample = response_body[:500] if len(response_body) > 500 else response_body
+        # Setup logging
+        self._setup_logging()
 
-        log = APICallLog(
-            timestamp=datetime.now().isoformat(),
-            endpoint=endpoint,
+    def _setup_logging(self):
+        """Setup file and console logging."""
+        AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+
+        self.logger = logging.getLogger(f"audit_{self.run_id}")
+        self.logger.setLevel(logging.DEBUG)
+
+        # File handler
+        log_file = AUDIT_DIR / f"factor_audit_{self.run_id}.log"
+        fh = logging.FileHandler(log_file)
+        fh.setLevel(logging.DEBUG)
+
+        # Console handler (less verbose)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+
+        # Formatter
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
+
+        self.logger.addHandler(fh)
+        self.logger.addHandler(ch)
+
+        self.logger.info(f"Audit started: run_id={self.run_id}, season={self.season}, week={self.week}")
+
+    def log_factor_start(self, factor_name: str, team: str):
+        """Start logging a new factor calculation."""
+        self._current_factor = factor_name
+        self._current_team = team
+        self._current_entry = FactorAuditEntry(
+            factor_name=factor_name,
             team=team,
-            status_code=status_code,
-            response_hash=response_hash,
-            response_sample=response_sample,
-            latency_ms=latency_ms,
-            cached=cached
-        )
-        self.api_calls.append(log)
-        return log
-
-    def log_calculation(self, team: str, profile: str) -> CalculationAudit:
-        """Start a calculation audit for a team."""
-        audit = CalculationAudit(
-            team=team,
-            final_score=0.0,
-            profile=profile,
             timestamp=datetime.now().isoformat(),
-            steps=[],
-            warnings=[],
-            data_sources=[]
+            success=False
         )
-        self.calculations.append(audit)
-        return audit
+        self.teams_processed.add(team)
+        self.logger.debug(f"Starting {factor_name} for {team}")
 
-    def add_calculation_step(self, audit: CalculationAudit,
-                            description: str, inputs: Dict,
-                            formula: str, output: Any):
-        """Add a step to a calculation audit."""
-        step = CalculationStep(
-            step_number=len(audit.steps) + 1,
-            description=description,
-            inputs=inputs,
-            formula=formula,
-            output=output
-        )
-        audit.steps.append(step)
-        return step
+    def log_data_source(self, source: str, quality: str = "high"):
+        """Log a data source being used."""
+        if self._current_entry:
+            self._current_entry.data_sources.append(source)
+            self._current_entry.data_quality = quality
+        self.data_sources_used.add(source)
+        self.logger.debug(f"  Using data source: {source} (quality: {quality})")
 
-    def check_freshness(self, source: str, last_fetched: datetime,
-                       max_age_minutes: int = 240) -> DataFreshnessCheck:
-        """Check if data source is fresh enough."""
-        age = datetime.now() - last_fetched
-        age_minutes = int(age.total_seconds() / 60)
+    def log_missing_field(self, field_name: str, critical: bool = False):
+        """Log a missing data field."""
+        if self._current_entry:
+            self._current_entry.missing_fields.append(field_name)
 
-        if age_minutes <= max_age_minutes:
-            status = VerificationStatus.VERIFIED
-        elif age_minutes <= max_age_minutes * 2:
-            status = VerificationStatus.WARNING
-        else:
-            status = VerificationStatus.FAILED
+        # Track counts
+        key = f"{self._current_factor}:{field_name}" if self._current_factor else field_name
+        self.missing_data_counts[key] = self.missing_data_counts.get(key, 0) + 1
 
-        check = DataFreshnessCheck(
-            source=source,
-            last_fetched=last_fetched.isoformat(),
-            age_minutes=age_minutes,
-            max_age_minutes=max_age_minutes,
-            status=status
-        )
-        self.freshness_checks.append(check)
-        return check
+        level = logging.WARNING if critical else logging.DEBUG
+        self.logger.log(level, f"  Missing field: {field_name}")
 
-    def cross_validate(self, check_name: str,
-                      source_a: str, value_a: Any,
-                      source_b: str, value_b: Any,
-                      tolerance: float = 0.0) -> CrossValidationCheck:
-        """Compare two sources to verify agreement."""
+    def log_warning(self, message: str):
+        """Log a warning for the current factor."""
+        if self._current_entry:
+            self._current_entry.warnings.append(message)
+        self.logger.warning(f"  {message}")
 
-        # Determine if they match
-        if isinstance(value_a, (int, float)) and isinstance(value_b, (int, float)):
-            match = abs(value_a - value_b) <= tolerance
-            explanation = f"Difference: {abs(value_a - value_b):.2f} (tolerance: {tolerance})"
-        else:
-            match = str(value_a).lower() == str(value_b).lower()
-            explanation = "String comparison (case-insensitive)"
+    def log_raw_value(self, key: str, value: Any):
+        """Log a raw calculated value."""
+        if self._current_entry:
+            self._current_entry.raw_values[key] = value
+        self.logger.debug(f"  {key}: {value}")
 
-        status = VerificationStatus.VERIFIED if match else VerificationStatus.WARNING
+    def log_sample_size(self, n: int):
+        """Log the sample size used for calculation."""
+        if self._current_entry:
+            self._current_entry.sample_size = n
+        self.logger.debug(f"  Sample size: {n}")
 
-        check = CrossValidationCheck(
-            check_name=check_name,
-            source_a=source_a,
-            source_a_value=value_a,
-            source_b=source_b,
-            source_b_value=value_b,
-            match=match,
-            tolerance=tolerance,
-            explanation=explanation,
-            status=status
-        )
-        self.cross_validations.append(check)
-        return check
+    def log_factor_complete(self, factor_name: str, team: str,
+                           score: float = None, success: bool = True,
+                           error: str = None):
+        """Complete logging for a factor calculation."""
+        if self._current_entry:
+            self._current_entry.success = success
+            self._current_entry.score = score
+            self._current_entry.error = error
+            self.entries.append(self._current_entry)
 
-    def sanity_check(self, check_name: str, value: Any,
-                    expected_min: float = None,
-                    expected_max: float = None) -> SanityCheck:
-        """Verify a value is in expected range."""
+            if success:
+                self.logger.info(f"  {team} {factor_name}: {score:.2f}" if score else f"  {team} {factor_name}: OK")
+            else:
+                self.logger.error(f"  {team} {factor_name}: FAILED - {error}")
+                self.errors.append(f"{team}/{factor_name}: {error}")
 
-        passed = True
-        explanation = "Value is within expected range"
+        # Reset current
+        self._current_entry = None
+        self._current_factor = None
+        self._current_team = None
 
-        if expected_min is not None and value < expected_min:
-            passed = False
-            explanation = f"Value {value} is below minimum {expected_min}"
-        elif expected_max is not None and value > expected_max:
-            passed = False
-            explanation = f"Value {value} is above maximum {expected_max}"
+    def log_error(self, message: str, exception: Exception = None):
+        """Log an error."""
+        error_msg = f"{message}: {str(exception)}" if exception else message
+        self.errors.append(error_msg)
+        self.logger.error(error_msg)
 
-        status = VerificationStatus.VERIFIED if passed else VerificationStatus.WARNING
+    def get_report(self) -> FactorAuditReport:
+        """Generate the audit report."""
+        succeeded = sum(1 for e in self.entries if e.success)
+        failed = sum(1 for e in self.entries if not e.success)
 
-        check = SanityCheck(
-            check_name=check_name,
-            value=value,
-            expected_min=expected_min,
-            expected_max=expected_max,
-            passed=passed,
-            explanation=explanation,
-            status=status
-        )
-        self.sanity_checks.append(check)
-        return check
-
-    def add_warning(self, category: str, message: str, team: str = None):
-        """Add a warning that will appear in the report."""
-        self.warnings.append({
-            'timestamp': datetime.now().isoformat(),
-            'category': category,
-            'message': message,
-            'team': team
-        })
-
-    def add_error(self, category: str, message: str, team: str = None):
-        """Add an error that will appear in the report."""
-        self.errors.append({
-            'timestamp': datetime.now().isoformat(),
-            'category': category,
-            'message': message,
-            'team': team
-        })
-
-    def get_overall_status(self) -> VerificationStatus:
-        """Get overall verification status."""
-        if self.errors:
-            return VerificationStatus.FAILED
-
-        # Check all verification results
-        all_checks = (
-            [c.status for c in self.freshness_checks] +
-            [c.status for c in self.cross_validations] +
-            [c.status for c in self.sanity_checks]
+        return FactorAuditReport(
+            run_id=self.run_id,
+            timestamp=self.timestamp,
+            season=self.season,
+            week=self.week,
+            factors_calculated=len(self.entries),
+            factors_succeeded=succeeded,
+            factors_failed=failed,
+            teams_processed=len(self.teams_processed),
+            data_sources_used=list(self.data_sources_used),
+            missing_data_summary=self.missing_data_counts,
+            entries=self.entries,
+            errors=self.errors
         )
 
-        if any(s == VerificationStatus.FAILED for s in all_checks):
-            return VerificationStatus.FAILED
-        elif any(s == VerificationStatus.WARNING for s in all_checks):
-            return VerificationStatus.WARNING
-        elif all_checks:
-            return VerificationStatus.VERIFIED
-        else:
-            return VerificationStatus.PENDING
+    def save_report(self, filename: str = None) -> Path:
+        """Save the audit report to JSON."""
+        AUDIT_DIR.mkdir(parents=True, exist_ok=True)
 
-    def generate_summary(self) -> Dict:
-        """Generate summary statistics."""
-        return {
-            'session_id': self.session_id,
-            'session_start': self.session_start.isoformat(),
-            'overall_status': self.get_overall_status().value,
-            'api_calls': len(self.api_calls),
-            'api_calls_cached': sum(1 for c in self.api_calls if c.cached),
-            'api_calls_fresh': sum(1 for c in self.api_calls if not c.cached),
-            'calculations': len(self.calculations),
-            'freshness_checks': {
-                'total': len(self.freshness_checks),
-                'passed': sum(1 for c in self.freshness_checks if c.status == VerificationStatus.VERIFIED),
-                'warnings': sum(1 for c in self.freshness_checks if c.status == VerificationStatus.WARNING),
-                'failed': sum(1 for c in self.freshness_checks if c.status == VerificationStatus.FAILED),
-            },
-            'cross_validations': {
-                'total': len(self.cross_validations),
-                'matched': sum(1 for c in self.cross_validations if c.match),
-                'mismatched': sum(1 for c in self.cross_validations if not c.match),
-            },
-            'sanity_checks': {
-                'total': len(self.sanity_checks),
-                'passed': sum(1 for c in self.sanity_checks if c.passed),
-                'failed': sum(1 for c in self.sanity_checks if not c.passed),
-            },
-            'warnings': len(self.warnings),
-            'errors': len(self.errors),
-        }
+        report = self.get_report()
 
-    def generate_report_markdown(self) -> str:
-        """Generate full human-readable report in Markdown."""
-        summary = self.generate_summary()
+        if filename is None:
+            filename = f"factor_audit_{self.run_id}.json"
 
-        report = f"""
-# NFL Model Verification Report
-
-**Session ID:** {summary['session_id']}
-**Generated:** {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
-**Overall Status:** {summary['overall_status']}
-
----
-
-## Executive Summary
-
-| Metric | Count |
-|--------|-------|
-| API Calls | {summary['api_calls']} ({summary['api_calls_fresh']} fresh, {summary['api_calls_cached']} cached) |
-| Teams Calculated | {summary['calculations']} |
-| Warnings | {summary['warnings']} |
-| Errors | {summary['errors']} |
-
-### Verification Results
-
-| Check Type | Passed | Warnings | Failed |
-|------------|--------|----------|--------|
-| Data Freshness | {summary['freshness_checks']['passed']} | {summary['freshness_checks']['warnings']} | {summary['freshness_checks']['failed']} |
-| Cross-Validation | {summary['cross_validations']['matched']} | - | {summary['cross_validations']['mismatched']} |
-| Sanity Checks | {summary['sanity_checks']['passed']} | - | {summary['sanity_checks']['failed']} |
-
----
-
-## Data Freshness
-
-*These checks verify we're using recent data, not stale cache.*
-
-"""
-        for check in self.freshness_checks:
-            report += check.to_human_readable() + "\n"
-
-        report += """
----
-
-## Cross-Validation Checks
-
-*These checks compare multiple data sources to verify agreement.*
-
-"""
-        for check in self.cross_validations:
-            report += check.to_human_readable() + "\n"
-
-        report += """
----
-
-## Sanity Checks
-
-*These checks verify outputs are in expected ranges.*
-
-"""
-        for check in self.sanity_checks:
-            report += check.to_human_readable() + "\n"
-
-        if self.warnings:
-            report += """
----
-
-## Warnings
-
-"""
-            for w in self.warnings:
-                team_str = f" ({w['team']})" if w['team'] else ""
-                report += f"- **{w['category']}**{team_str}: {w['message']}\n"
-
-        if self.errors:
-            report += """
----
-
-## Errors
-
-"""
-            for e in self.errors:
-                team_str = f" ({e['team']})" if e['team'] else ""
-                report += f"- **{e['category']}**{team_str}: {e['message']}\n"
-
-        report += """
----
-
-## API Call Log
-
-*Proof that we actually called external data sources.*
-
-"""
-        for call in self.api_calls[-10:]:  # Last 10 calls
-            report += call.to_human_readable() + "\n"
-
-        if len(self.api_calls) > 10:
-            report += f"\n*...and {len(self.api_calls) - 10} more calls (see full log)*\n"
-
-        return report
-
-    def save_full_log(self, filepath: str = 'data/audit_log.json'):
-        """Save complete audit log to JSON for detailed analysis."""
-        log_data = {
-            'summary': self.generate_summary(),
-            'api_calls': [asdict(c) for c in self.api_calls],
-            'calculations': [asdict(c) for c in self.calculations],
-            'freshness_checks': [asdict(c) for c in self.freshness_checks],
-            'cross_validations': [asdict(c) for c in self.cross_validations],
-            'sanity_checks': [asdict(c) for c in self.sanity_checks],
-            'warnings': self.warnings,
-            'errors': self.errors,
-        }
+        filepath = AUDIT_DIR / filename
 
         with open(filepath, 'w') as f:
-            json.dump(log_data, f, indent=2, default=str)
+            json.dump(report.to_dict(), f, indent=2, default=str)
 
+        self.logger.info(f"Audit report saved: {filepath}")
         return filepath
 
+    def print_summary(self):
+        """Print a summary of the audit."""
+        report = self.get_report()
 
-# Global logger instance
-_audit_logger: Optional[AuditLogger] = None
+        print("\n" + "=" * 70)
+        print("FACTOR CALCULATION AUDIT SUMMARY")
+        print("=" * 70)
+        print(f"Run ID: {report.run_id}")
+        print(f"Season: {report.season}, Week: {report.week}")
+        print(f"Timestamp: {report.timestamp}")
+        print("-" * 70)
+        print(f"Teams Processed: {report.teams_processed}")
+        print(f"Factors Calculated: {report.factors_calculated}")
+        print(f"  - Succeeded: {report.factors_succeeded}")
+        print(f"  - Failed: {report.factors_failed}")
+        print("-" * 70)
+        print("Data Sources Used:")
+        for src in sorted(report.data_sources_used):
+            print(f"  - {src}")
+        print("-" * 70)
 
-def get_audit_logger() -> AuditLogger:
-    """Get or create the global audit logger."""
-    global _audit_logger
-    if _audit_logger is None:
-        _audit_logger = AuditLogger()
-    return _audit_logger
+        if report.missing_data_summary:
+            print("Missing Data Summary:")
+            for field, count in sorted(report.missing_data_summary.items(),
+                                       key=lambda x: -x[1])[:10]:
+                print(f"  - {field}: {count} occurrences")
 
-def reset_audit_logger():
-    """Reset the audit logger for a new session."""
-    global _audit_logger
-    _audit_logger = AuditLogger()
-    return _audit_logger
+        if report.errors:
+            print("-" * 70)
+            print(f"Errors ({len(report.errors)}):")
+            for err in report.errors[:5]:
+                print(f"  - {err}")
+            if len(report.errors) > 5:
+                print(f"  ... and {len(report.errors) - 5} more")
+
+        print("=" * 70)
+
+    def get_factor_summary(self) -> Dict[str, Dict]:
+        """Get summary statistics by factor type."""
+        summary = {}
+
+        for entry in self.entries:
+            factor = entry.factor_name
+            if factor not in summary:
+                summary[factor] = {
+                    'count': 0,
+                    'succeeded': 0,
+                    'failed': 0,
+                    'avg_score': 0,
+                    'scores': [],
+                    'missing_fields': set(),
+                    'data_sources': set()
+                }
+
+            summary[factor]['count'] += 1
+            if entry.success:
+                summary[factor]['succeeded'] += 1
+                if entry.score is not None:
+                    summary[factor]['scores'].append(entry.score)
+            else:
+                summary[factor]['failed'] += 1
+
+            summary[factor]['missing_fields'].update(entry.missing_fields)
+            summary[factor]['data_sources'].update(entry.data_sources)
+
+        # Calculate averages
+        for factor in summary:
+            scores = summary[factor]['scores']
+            if scores:
+                summary[factor]['avg_score'] = sum(scores) / len(scores)
+            summary[factor]['missing_fields'] = list(summary[factor]['missing_fields'])
+            summary[factor]['data_sources'] = list(summary[factor]['data_sources'])
+            del summary[factor]['scores']
+
+        return summary
 
 
-# Pre-defined sanity check ranges based on NFL data
-SANITY_RANGES = {
-    'qb_epa_per_dropback': {'min': -0.5, 'max': 0.5},
-    'cpoe': {'min': -10, 'max': 15},
-    'team_score': {'min': 0, 'max': 100},
-    'win_probability': {'min': 0, 'max': 1},
-    'pressure_rate': {'min': 10, 'max': 50},
-    '3rd_down_rate': {'min': 20, 'max': 60},
-    'red_zone_rate': {'min': 30, 'max': 80},
-    'games_played': {'min': 1, 'max': 17},
-    'pass_attempts': {'min': 100, 'max': 700},
-}
-
-
-def run_standard_sanity_checks(logger: AuditLogger, team: str, data: Dict):
-    """Run standard sanity checks on team data."""
-
-    for field, ranges in SANITY_RANGES.items():
-        if field in data and data[field] is not None:
-            logger.sanity_check(
-                check_name=f"{team} - {field}",
-                value=data[field],
-                expected_min=ranges.get('min'),
-                expected_max=ranges.get('max')
-            )
-
-
-def audited_api_call(logger: AuditLogger, url: str, team: str = None):
-    """Wrapper that logs API calls for audit trail."""
-    import requests
-    import time
-
-    start_time = time.time()
-
-    try:
-        response = requests.get(url, timeout=10)
-        latency_ms = int((time.time() - start_time) * 1000)
-
-        logger.log_api_call(
-            endpoint=url,
-            team=team,
-            status_code=response.status_code,
-            response_body=response.text,
-            latency_ms=latency_ms,
-            cached=False
-        )
-
-        return response
-
-    except Exception as e:
-        logger.add_error(
-            category="API_CALL",
-            message=f"Failed to call {url}: {str(e)}",
-            team=team
-        )
-        raise
+# Convenience function
+def create_audit_logger(season: int = 2024, week: int = None) -> AuditLogger:
+    """Create a new audit logger instance."""
+    return AuditLogger(season=season, week=week)
 
 
 if __name__ == "__main__":
-    # Example usage
-    logger = AuditLogger()
+    # Test the audit logger
+    audit = AuditLogger(season=2024, week=12)
 
-    # Simulate some checks
-    logger.sanity_check("Test Score", 75, expected_min=0, expected_max=100)
-    logger.add_warning("DATA", "Using cached data from 2 hours ago")
+    # Simulate some factor calculations
+    for team in ["KC", "BUF", "DET"]:
+        audit.log_factor_start("qb_quality", team)
+        audit.log_data_source("FTN EPA", quality="high")
+        audit.log_raw_value("epa_dropback", 0.15)
+        audit.log_sample_size(11)
+        audit.log_factor_complete("qb_quality", team, score=85.0, success=True)
 
-    print(logger.generate_report_markdown())
+    # Simulate a failure
+    audit.log_factor_start("qb_quality", "CLE")
+    audit.log_data_source("ESPN 2025 Stats", quality="medium")
+    audit.log_missing_field("cpoe", critical=True)
+    audit.log_warning("Small sample size")
+    audit.log_factor_complete("qb_quality", "CLE", score=45.0, success=True)
+
+    audit.print_summary()
+    audit.save_report()
