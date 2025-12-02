@@ -13,18 +13,18 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # Import audit logger
-from audit_logger import get_audit_logger, reset_audit_logger
+from audit_logger import create_audit_logger
 
 
 def run_full_pipeline(skip_data_pull: bool = False):
     """Run the complete pipeline"""
-    # Reset audit logger for new run
-    logger = reset_audit_logger()
+    # Create audit logger for new run
+    logger = create_audit_logger()
 
     print("\n" + "=" * 60)
     print("NFL POLYMARKET MODEL - FULL PIPELINE")
     print("=" * 60 + "\n")
-    print(f"Audit Session ID: {logger.session_id}")
+    print(f"Audit Logger initialized")
 
     # Step 1: Pull data
     if not skip_data_pull:
@@ -87,20 +87,8 @@ def run_full_pipeline(skip_data_pull: bool = False):
     print("\n[STEP 9/9] Generating Audit Report...")
     print("-" * 40)
     try:
-        # Save JSON log
-        outputs_dir = Path(__file__).parent / "outputs"
-        outputs_dir.mkdir(exist_ok=True)
-        logger.save_full_log(str(outputs_dir / "audit_log.json"))
-
-        # Save Markdown report
-        report_md = logger.generate_report_markdown()
-        (outputs_dir / "audit_report.md").write_text(report_md)
-
-        summary = logger.generate_summary()
-        print(f"  Overall Status: {summary['overall_status']}")
-        print(f"  API Calls: {summary['api_calls']} ({summary['api_calls_fresh']} fresh)")
-        print(f"  Sanity Checks: {summary['sanity_checks']['passed']}/{summary['sanity_checks']['total']} passed")
-        print(f"  Warnings: {summary['warnings']}, Errors: {summary['errors']}")
+        logger.save_report()
+        logger.print_summary()
     except Exception as e:
         print(f"Warning: Could not generate audit report: {e}")
 

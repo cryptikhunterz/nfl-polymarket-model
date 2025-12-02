@@ -1,6 +1,23 @@
 """
 NFL Scoring Model
-Implements 5 weight profiles for team scoring
+Implements 7-factor model with 6 weight profiles for team scoring
+
+7 FACTORS:
+1. QB Quality (30%) - EPA/dropback, CPOE, sack avoidance
+2. Efficiency (25%) - Team Elo, Off/Def EPA
+3. O-Line (15%) - Pass block, run block, pressure allowed
+4. Situational (10%) - 3rd down, red zone, Q4 performance
+5. Luck Regression (5%) - INT luck, fumble luck, close games
+6. D-Line (8%) - Sacks, QB hits, run defense EPA
+7. NGS Receiving (7%) - Separation, YAC, catch %, production
+
+6 WEIGHT PROFILES:
+- MAIN: Balanced approach for ensemble
+- QB_HEAVY: Emphasizes QB for playoff context
+- EFFICIENCY_HEAVY: Trust EPA/Elo metrics most
+- TRENCHES: O-Line + D-Line focused
+- ANTI_LUCK: Weights luck regression heavily
+- SKILL_ONLY: Focuses on QB + Receiving talent
 """
 
 import pandas as pd
@@ -13,52 +30,73 @@ OUTPUTS_DIR = Path(__file__).parent.parent / "outputs"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-# Weight profiles per spec
+# 7-Factor Weight Profiles (all weights sum to 1.00)
 WEIGHT_PROFILES = {
-    'baseline': {
-        'name': 'Baseline',
-        'description': 'Balanced starting point',
+    'main': {
+        'name': 'MAIN',
+        'description': 'Balanced ensemble approach',
         'qb_quality': 0.30,
         'efficiency': 0.25,
-        'line_play': 0.20,
-        'situational': 0.15,
-        'luck_regression': 0.10
+        'oline': 0.15,
+        'situational': 0.10,
+        'luck_regression': 0.05,
+        'dline': 0.08,
+        'ngs_receiving': 0.07
     },
     'qb_heavy': {
-        'name': 'QB Heavy',
-        'description': 'Playoffs are QB battles',
-        'qb_quality': 0.45,
+        'name': 'QB_HEAVY',
+        'description': 'Playoffs are QB battles - emphasizes quarterback play',
+        'qb_quality': 0.40,
         'efficiency': 0.20,
-        'line_play': 0.15,
-        'situational': 0.12,
-        'luck_regression': 0.08
+        'oline': 0.12,
+        'situational': 0.08,
+        'luck_regression': 0.05,
+        'dline': 0.07,
+        'ngs_receiving': 0.08
     },
-    'line_heavy': {
-        'name': 'Line Heavy',
-        'description': 'OL is undervalued by market',
-        'qb_quality': 0.25,
-        'efficiency': 0.20,
-        'line_play': 0.30,
-        'situational': 0.15,
-        'luck_regression': 0.10
-    },
-    'efficiency_pure': {
-        'name': 'Efficiency Pure',
-        'description': 'Trust Elo and EPA most',
+    'efficiency_heavy': {
+        'name': 'EFFICIENCY_HEAVY',
+        'description': 'Trust EPA and Elo metrics most heavily',
         'qb_quality': 0.20,
         'efficiency': 0.40,
-        'line_play': 0.15,
-        'situational': 0.15,
-        'luck_regression': 0.10
+        'oline': 0.12,
+        'situational': 0.10,
+        'luck_regression': 0.05,
+        'dline': 0.08,
+        'ngs_receiving': 0.05
+    },
+    'trenches': {
+        'name': 'TRENCHES',
+        'description': 'O-Line + D-Line focused - games won in the trenches',
+        'qb_quality': 0.20,
+        'efficiency': 0.18,
+        'oline': 0.25,
+        'situational': 0.07,
+        'luck_regression': 0.05,
+        'dline': 0.20,
+        'ngs_receiving': 0.05
     },
     'anti_luck': {
-        'name': 'Anti-Luck',
-        'description': 'Market ignores regression',
-        'qb_quality': 0.25,
+        'name': 'ANTI_LUCK',
+        'description': 'Market ignores regression - weights luck heavily',
+        'qb_quality': 0.22,
         'efficiency': 0.20,
-        'line_play': 0.15,
-        'situational': 0.15,
-        'luck_regression': 0.25
+        'oline': 0.12,
+        'situational': 0.08,
+        'luck_regression': 0.25,
+        'dline': 0.08,
+        'ngs_receiving': 0.05
+    },
+    'skill_only': {
+        'name': 'SKILL_ONLY',
+        'description': 'Focuses on QB + receiving talent (offensive weapons)',
+        'qb_quality': 0.35,
+        'efficiency': 0.15,
+        'oline': 0.10,
+        'situational': 0.08,
+        'luck_regression': 0.05,
+        'dline': 0.07,
+        'ngs_receiving': 0.20
     }
 }
 
@@ -92,7 +130,7 @@ class NFLModel:
         self.scores = None
 
     def load_factors(self) -> pd.DataFrame:
-        """Load team factors from processed data"""
+        """Load team factors from processed data, including D-Line and NGS Receiving"""
         factor_file = PROCESSED_DIR / "team_factors.csv"
 
         if not factor_file.exists():
@@ -100,25 +138,72 @@ class NFLModel:
             return None
 
         self.factors = pd.read_csv(factor_file)
-        print(f"Loaded factors for {len(self.factors)} teams")
+        print(f"[VERBOSE] Loaded base factors for {len(self.factors)} teams")
+
+        # Load D-Line factor if available
+        dline_file = PROCESSED_DIR / "factor_dline.csv"
+        if dline_file.exists():
+            dline_df = pd.read_csv(dline_file)
+            if 'dline_composite_score' in dline_df.columns:
+                self.factors = self.factors.merge(
+                    dline_df[['team', 'dline_composite_score']],
+                    on='team', how='left'
+                )
+                print(f"[VERBOSE] Loaded D-Line factor for {len(dline_df)} teams")
+            else:
+                print(f"[WARNING] D-Line file exists but missing dline_composite_score column")
+        else:
+            print(f"[WARNING] D-Line factor file not found: {dline_file}")
+
+        # Load NGS Receiving factor if available
+        ngs_file = PROCESSED_DIR / "factor_ngs_receiving.csv"
+        if ngs_file.exists():
+            ngs_df = pd.read_csv(ngs_file)
+            if 'receiving_score' in ngs_df.columns:
+                self.factors = self.factors.merge(
+                    ngs_df[['team', 'receiving_score']],
+                    on='team', how='left'
+                )
+                print(f"[VERBOSE] Loaded NGS Receiving factor for {len(ngs_df)} teams")
+            else:
+                print(f"[WARNING] NGS file exists but missing receiving_score column")
+        else:
+            print(f"[WARNING] NGS Receiving factor file not found: {ngs_file}")
+
+        # Fill missing factor scores with 50 (league average)
+        factor_cols = ['dline_composite_score', 'receiving_score']
+        for col in factor_cols:
+            if col in self.factors.columns:
+                self.factors[col] = self.factors[col].fillna(50.0)
+
+        print(f"[VERBOSE] Final factors dataframe: {len(self.factors)} teams, {len(self.factors.columns)} columns")
+        print(f"[VERBOSE] Factor columns: {list(self.factors.columns)}")
+
         return self.factors
 
     def calculate_composite_score(self, row: pd.Series, weights: Dict) -> float:
-        """Calculate weighted composite score for a team"""
+        """Calculate weighted composite score for a team using 7 factors"""
         score = 0
 
-        # Map factor column names to weight keys
+        # Map factor column names to weight keys (7-factor model)
         factor_map = {
             'qb_quality_score': 'qb_quality',
             'efficiency_score': 'efficiency',
-            'line_play_score': 'line_play',
+            'oline_score': 'oline',                    # O-Line factor
+            'line_play_score': 'oline',                # Legacy column name fallback
             'situational_score': 'situational',
-            'luck_regression_score': 'luck_regression'
+            'luck_regression_score': 'luck_regression',
+            'dline_score': 'dline',                    # D-Line factor (NEW)
+            'dline_composite_score': 'dline',          # Alternate column name
+            'ngs_receiving_score': 'ngs_receiving',    # NGS Receiving factor (NEW)
+            'receiving_score': 'ngs_receiving'         # Alternate column name
         }
 
         for col, weight_key in factor_map.items():
             if col in row.index:
-                score += row[col] * weights.get(weight_key, 0)
+                value = row[col]
+                if pd.notna(value):
+                    score += value * weights.get(weight_key, 0)
 
         return score
 
@@ -327,7 +412,7 @@ class NFLModel:
     def get_team_factor_breakdown(self, team: str) -> Dict:
         """
         Get detailed factor breakdown for a specific team.
-        Shows how each factor contributes to the team's score.
+        Shows how each factor contributes to the team's score (7-factor model).
         """
         if self.factors is None:
             self.load_factors()
@@ -341,14 +426,16 @@ class NFLModel:
 
         team_row = team_row.iloc[0]
 
-        # Factor details
+        # Factor details (7-factor model)
         factor_details = []
         factor_cols = {
             'qb_quality_score': {'name': 'QB Quality', 'weight_key': 'qb_quality'},
-            'efficiency_score': {'name': 'Team Efficiency', 'weight_key': 'efficiency'},
-            'line_play_score': {'name': 'Line Play', 'weight_key': 'line_play'},
+            'efficiency_score': {'name': 'Efficiency', 'weight_key': 'efficiency'},
+            'line_play_score': {'name': 'O-Line', 'weight_key': 'oline'},
             'situational_score': {'name': 'Situational', 'weight_key': 'situational'},
-            'luck_regression_score': {'name': 'Luck Regression', 'weight_key': 'luck_regression'}
+            'luck_regression_score': {'name': 'Luck Regression', 'weight_key': 'luck_regression'},
+            'dline_composite_score': {'name': 'D-Line', 'weight_key': 'dline'},
+            'receiving_score': {'name': 'NGS Receiving', 'weight_key': 'ngs_receiving'}
         }
 
         for col, info in factor_cols.items():

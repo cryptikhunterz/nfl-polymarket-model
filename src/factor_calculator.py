@@ -336,11 +336,13 @@ class FactorCalculator:
                 games = row.get('games', 0) or 0
                 if team:
                     if team not in ftn_by_team or games > ftn_by_team[team].get('games', 0):
+                        # FIX: Column is 'epa_per_dropback', not 'epa_db'
                         ftn_by_team[team] = {
                             'player': row.get('player', ''),
                             'epa': row.get('epa', 0),
-                            'epa_db': row.get('epa_db', 0),
+                            'epa_db': row.get('epa_per_dropback', 0),  # Fixed column name
                             'games': games,
+                            'dropbacks': row.get('dropbacks', 0),
                             'dyar': row.get('dyar', 0),
                             'dvoa': row.get('dvoa', 0)
                         }
@@ -826,13 +828,72 @@ class FactorCalculator:
                 primary_qb = team_qbs.groupby('qb_name')['dropbacks'].sum().idxmax()
                 qb_data = team_qbs[team_qbs['qb_name'] == primary_qb]
 
-            # Handle rookie QBs with no NFL stats - try 2025 data sources
-            if qb_data is None or len(qb_data) == 0:
-                # v3: Try ESPN 2025 / FTN EPA data for rookies
-                data_2025 = self.get_qb_efficiency_from_2025_data(team)
+            # v4: ALWAYS prefer FTN 2025 data if available (most accurate current season)
+            # FTN data is manually curated from screenshots and more reliable than nfl_data_py
+            data_2025 = self.get_qb_efficiency_from_2025_data(team)
 
+            # Use FTN data if available with sufficient games (priority over historical data)
+            if data_2025 and data_2025.get('source') == 'FTN' and data_2025.get('games', 0) >= 3:
+                # Use FTN 2025 data (most accurate current season)
+                epa_dropback = data_2025.get('epa_dropback', 0)
+                espn_rating = data_2025.get('espn_passer_rating', 90)
+                source = data_2025.get('source', 'FTN')
+
+                # Normalize EPA/dropback to score
+                epa_score = (epa_dropback + 0.3) / 0.6 * 100
+                epa_score = np.clip(epa_score, 0, 100)
+
+                # Use passer rating as CPOE proxy (normalized)
+                cpoe_score = (espn_rating - 70) / 60 * 100  # 70-130 range
+                cpoe_score = np.clip(cpoe_score, 0, 100)
+
+                # Composite score (raw)
+                raw_qb_quality = (epa_score * 0.60) + (cpoe_score * 0.40)
+
+                # v5: Apply Bayesian shrinkage for 2025 data
+                games_2025 = data_2025.get('games', 0)
+                is_rookie_2025 = games_2025 < 20  # Less than ~1.5 seasons
+                prior_2025 = get_qb_prior(is_backup, is_rookie_2025)
+                qb_quality = apply_bayesian_shrinkage(raw_qb_quality, games_2025, prior=prior_2025, prior_weight=8.0)
+                shrinkage_pct_2025 = ((raw_qb_quality - qb_quality) / raw_qb_quality * 100) if raw_qb_quality > 0 else 0
+
+                backup_tag = " [BACKUP]" if is_backup else ""
+                print(f"  {team}: {primary_qb} -> Using {source} data (2025, {games_2025}g, EPA={epa_dropback:.3f}, shrink={shrinkage_pct_2025:.1f}%){backup_tag}")
+
+                stats_info = QBStatsInfo(
+                    qb_name=primary_qb, team=team, stats_available=True,
+                    games_sample=data_2025.get('games', 0),
+                    data_quality='high', is_backup=is_backup,
+                    stats_source=source
+                )
+                self.qb_stats_info[team] = stats_info
+
+                qb_factors.append({
+                    'team': team,
+                    'primary_qb': primary_qb,
+                    'epa_dropback': epa_dropback,
+                    'cpoe': 0,  # Not available from 2025 data
+                    'sack_rate': 0.05,
+                    'epa_score': epa_score,
+                    'cpoe_score': cpoe_score,
+                    'sack_score': 50,
+                    'qb_quality_score': qb_quality,
+                    'is_backup_qb': is_backup,
+                    'stats_available': True,
+                    'stats_games': data_2025.get('games', 0),
+                    'stats_quality': 'high',
+                    'stats_warning': f"Using {source} 2025 data",
+                    'data_source': source,
+                    'ftn_epa_total': data_2025.get('ftn_epa_total'),
+                    'espn_passer_rating': espn_rating
+                })
+                continue
+
+            # Fallback: Handle QBs with no FTN data - try ESPN or use qb_stats
+            if qb_data is None or len(qb_data) == 0:
+                # No historical stats, try ESPN 2025 data
                 if data_2025 and data_2025.get('games', 0) >= 2:
-                    # Use 2025 data for rookie QBs
+                    # Use ESPN 2025 data as fallback
                     epa_dropback = data_2025.get('epa_dropback', 0)
                     espn_rating = data_2025.get('espn_passer_rating', 90)
                     source = data_2025.get('source', 'ESPN_2025')
@@ -842,27 +903,22 @@ class FactorCalculator:
                     epa_score = np.clip(epa_score, 0, 100)
 
                     # Use passer rating as CPOE proxy (normalized)
-                    cpoe_score = (espn_rating - 70) / 60 * 100  # 70-130 range
+                    cpoe_score = (espn_rating - 70) / 60 * 100
                     cpoe_score = np.clip(cpoe_score, 0, 100)
 
-                    # Composite score (raw)
                     raw_qb_quality = (epa_score * 0.60) + (cpoe_score * 0.40)
-
-                    # v5: Apply Bayesian shrinkage for 2025 data
                     games_2025 = data_2025.get('games', 0)
-                    is_rookie_2025 = games_2025 < 20  # Less than ~1.5 seasons
+                    is_rookie_2025 = games_2025 < 20
                     prior_2025 = get_qb_prior(is_backup, is_rookie_2025)
                     qb_quality = apply_bayesian_shrinkage(raw_qb_quality, games_2025, prior=prior_2025, prior_weight=8.0)
-                    shrinkage_pct_2025 = ((raw_qb_quality - qb_quality) / raw_qb_quality * 100) if raw_qb_quality > 0 else 0
 
                     backup_tag = " [BACKUP]" if is_backup else ""
-                    print(f"  {team}: {primary_qb} -> Using {source} data (2025, {games_2025}g, shrink={shrinkage_pct_2025:.1f}%){backup_tag}")
+                    print(f"  {team}: {primary_qb} -> Using {source} data (2025, {games_2025}g){backup_tag}")
 
                     stats_info = QBStatsInfo(
                         qb_name=primary_qb, team=team, stats_available=True,
-                        games_sample=data_2025.get('games', 0),
-                        data_quality='medium', is_backup=is_backup,
-                        stats_source=source
+                        games_sample=games_2025, data_quality='medium',
+                        is_backup=is_backup, stats_source=source
                     )
                     self.qb_stats_info[team] = stats_info
 
@@ -870,7 +926,7 @@ class FactorCalculator:
                         'team': team,
                         'primary_qb': primary_qb,
                         'epa_dropback': epa_dropback,
-                        'cpoe': 0,  # Not available from 2025 data
+                        'cpoe': 0,
                         'sack_rate': 0.05,
                         'epa_score': epa_score,
                         'cpoe_score': cpoe_score,
@@ -878,7 +934,7 @@ class FactorCalculator:
                         'qb_quality_score': qb_quality,
                         'is_backup_qb': is_backup,
                         'stats_available': True,
-                        'stats_games': data_2025.get('games', 0),
+                        'stats_games': games_2025,
                         'stats_quality': 'medium',
                         'stats_warning': f"Using {source} 2025 data",
                         'data_source': source,
